@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Project output and large files
+output/
+output_test_*/
+tests/test_output/
+*.wav
+*.mp3
+*.flac
+*.ogg
+*.midi
+*.mid
+
+# PyTorch / Demucs models cache
+models/
+.cache/
+
+# OS & Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Temporary files
+*.tmp
+*.log
