@@ -41,7 +41,7 @@ An end-to-end AI music transcription suite that isolates band instruments (Drums
 > 22프렛 가상 프렛보드에서 선택한 음표의 **동음이현(동일한 음이 나는 다른 줄과 프렛)** 위치를 실시간으로 탐색하고 클릭 한 번으로 운지를 교체하여 즉시 PDF로 재출력할 수 있습니다.
 
 <div align="center">
-  <img src="docs/images/edited_score_preview.png" alt="Edited TAB Score via Fretboard Editor" width="850"/>
+  <img src="docs/images/fretboard_editor.png" alt="Interactive Virtual Fretboard Editor" width="850"/>
 </div>
 
 ---
@@ -176,7 +176,7 @@ ai_band_transcriber/
 │   └── images/
 │       ├── gui_main.png
 │       ├── tab_score_preview.png
-│       └── edited_score_preview.png
+│       └── fretboard_editor.png
 │
 └── tests/                     # 단위 테스트 및 검증 스크립트
 ```
