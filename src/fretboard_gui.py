@@ -660,7 +660,7 @@ class FretboardEditorDialog(ctk.CTkToplevel):
                 self._apply_alternative(s_cand, f_cand)
                 break
 
-    def _save_changes(self):
+    def _save_changes(self, show_dialog: bool = True):
         """Saves current modifications back to MusicXML."""
         saved_path = self.editor.save_xml()
         self.unsaved_changes = 0
@@ -668,11 +668,68 @@ class FretboardEditorDialog(ctk.CTkToplevel):
             text=f"💾 악보 저장 완료: {os.path.basename(saved_path)}",
             text_color="#34C759"
         )
-        messagebox.showinfo("저장 완료", f"수정된 운지가 MusicXML 악보에 성공적으로 반영되었습니다:\n{saved_path}")
+        if show_dialog:
+            messagebox.showinfo("저장 완료", f"수정된 운지가 MusicXML 악보에 성공적으로 반영되었습니다:\n{saved_path}")
+        return saved_path
 
     def _save_and_reexport_pdf(self):
-        """Saves MusicXML and re-compiles TAB PDF via LilyPond."""
-        self._save_changes()
+        """Saves MusicXML and re-compiles TAB PDF via LilyPond, prompting about old PDF deletion."""
+        # 1. Check for existing PDF candidate
+        xml_base = os.path.splitext(os.path.abspath(self.xml_path))[0]
+        pdf_candidates = [
+            f"{xml_base}_TAB.pdf",
+            f"{xml_base}_TAB_Score.pdf",
+            f"{xml_base}.pdf",
+        ]
+        existing_pdf = None
+        for cand in pdf_candidates:
+            if os.path.exists(cand):
+                existing_pdf = cand
+                break
+
+        # 2. Ask user whether to delete old PDF if an existing PDF is found
+        if existing_pdf and os.path.exists(existing_pdf):
+            pdf_name = os.path.basename(existing_pdf)
+            ans = messagebox.askyesnocancel(
+                "기존 PDF 악보 삭제 여부 확인",
+                f"악보 운지가 수정되었습니다.\n\n"
+                f"기존에 저장되어 있던 이전 PDF 악보 파일을 삭제하시겠습니까?\n"
+                f"• 대상 파일: {pdf_name}\n\n"
+                f"• [예(Yes)]: 이전 PDF를 삭제하고 최신본으로 새로 생성합니다.\n"
+                f"• [아니오(No)]: 이전 PDF를 삭제하지 않고 백업 보존한 뒤 새로 생성합니다.\n"
+                f"• [취소(Cancel)]: PDF 생성을 취소합니다."
+            )
+            if ans is None:
+                # Cancelled by user
+                return
+            elif ans is True:
+                # Delete existing PDF
+                try:
+                    os.remove(existing_pdf)
+                except PermissionError:
+                    messagebox.showwarning(
+                        "파일 사용 중",
+                        f"기존 PDF 파일({pdf_name})이 PDF 뷰어 등에서 열려 있어 삭제할 수 없습니다.\n"
+                        f"PDF 뷰어에서 파일을 닫은 후 다시 시도하시거나, [아니오]를 선택해 주세요."
+                    )
+                    return
+                except Exception as e:
+                    print(f"[-] 기존 PDF 삭제 실패: {e}")
+            elif ans is False:
+                # Keep old PDF: create a timestamped backup copy so it isn't lost
+                try:
+                    import shutil, time
+                    timestamp = time.strftime("%Y%m%d_%H%M%S")
+                    backup_name = f"{os.path.splitext(existing_pdf)[0]}_backup_{timestamp}.pdf"
+                    shutil.copy2(existing_pdf, backup_name)
+                    print(f"[+] 이전 PDF 백업 저장 완료: {backup_name}")
+                except Exception as e:
+                    print(f"[-] 이전 PDF 백업 실패: {e}")
+
+        # 3. Save MusicXML (without extra popup)
+        self._save_changes(show_dialog=False)
+
+        # 4. Re-compile PDF via LilyPond
         self.lbl_save_status.configure(text="⏳ PDF 악보 재출력 중 (LilyPond)...", text_color="#FF9500")
         self.update()
 

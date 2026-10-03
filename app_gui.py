@@ -59,6 +59,7 @@ class BandTranscriberApp(ctk.CTk):
         self.last_output_dir = None
 
         self._build_ui()
+        self._restore_recent_scores()
 
     def _build_ui(self):
         # 1. Bottom Button Row (Open Output / Open Score / PDF / Fret Editor)
@@ -480,23 +481,116 @@ class BandTranscriberApp(ctk.CTk):
             self.is_running = False
             self.btn_run.configure(state="normal", text="🚀 악보 및 타브 생성 시작")
 
+    def _restore_recent_scores(self):
+        """
+        Auto-detect the most recent MusicXML and PDF scores from output/scores on app startup
+        so that buttons are immediately ready to use even after restarting the application.
+        """
+        output_dir = os.path.join(PROJECT_DIR, "output")
+        scores_dir = os.path.join(output_dir, "scores")
+
+        # 1. Output folder button is enabled whenever output directory exists
+        if os.path.exists(output_dir):
+            self.last_output_dir = output_dir
+            self.btn_open_folder.configure(state="normal")
+
+        # 2. Check for existing MusicXML scores
+        if os.path.exists(scores_dir):
+            xml_files = [
+                os.path.join(scores_dir, f) for f in os.listdir(scores_dir)
+                if f.lower().endswith(('.musicxml', '.xml'))
+            ]
+            if xml_files:
+                xml_files.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+                latest_xml = xml_files[0]
+                self.last_score_path = latest_xml
+                self.btn_open_score.configure(state="normal")
+
+                # Check for corresponding PDF
+                base_no_ext = os.path.splitext(latest_xml)[0]
+                candidates = [
+                    f"{base_no_ext}_TAB.pdf",
+                    f"{base_no_ext}.pdf",
+                ]
+                latest_pdf = None
+                for c in candidates:
+                    if os.path.exists(c):
+                        latest_pdf = c
+                        break
+                if not latest_pdf:
+                    pdf_files = [
+                        os.path.join(scores_dir, f) for f in os.listdir(scores_dir)
+                        if f.lower().endswith('.pdf')
+                    ]
+                    if pdf_files:
+                        pdf_files.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+                        latest_pdf = pdf_files[0]
+
+                if latest_pdf and os.path.exists(latest_pdf):
+                    self.last_pdf_path = latest_pdf
+                    self.btn_open_pdf.configure(state="normal")
+
+                self.lbl_active_score.configure(
+                    text=f"🎼 최근 악보: {os.path.basename(latest_xml)}",
+                    text_color="#34C759"
+                )
+
     def _open_folder(self):
-        if self.last_output_dir and os.path.exists(self.last_output_dir):
-            os.startfile(self.last_output_dir)
+        target_dir = self.last_output_dir or os.path.join(PROJECT_DIR, "output")
+        if os.path.exists(target_dir):
+            os.startfile(target_dir)
+        else:
+            messagebox.showinfo("알림", "아직 생성된 결과 폴더가 없습니다.")
 
     def _open_score(self):
-        if self.last_score_path and os.path.exists(self.last_score_path):
-            try:
-                os.startfile(self.last_score_path)
-            except Exception as e:
-                messagebox.showinfo("알림", f"파일을 열 수 없습니다:\n{e}\n\nMuseScore 4 또는 TuxGuitar를 먼저 설치해 주세요.")
+        score_path = self.last_score_path
+        default_scores = os.path.join(PROJECT_DIR, "output", "scores")
+
+        # If no score selected yet, prompt user to choose one
+        if not score_path or not os.path.exists(score_path):
+            chosen = filedialog.askopenfilename(
+                title="열람할 악보(MusicXML) 파일을 선택하세요",
+                initialdir=default_scores if os.path.exists(default_scores) else PROJECT_DIR,
+                filetypes=[("MusicXML 악보 (*.musicxml, *.xml)", "*.musicxml *.xml"), ("모든 파일 (*.*)", "*.*")]
+            )
+            if chosen and os.path.exists(chosen):
+                score_path = chosen
+                self.last_score_path = chosen
+                self.btn_open_score.configure(state="normal")
+                self.lbl_active_score.configure(
+                    text=f"🎼 선택된 악보: {os.path.basename(chosen)}",
+                    text_color="#34C759"
+                )
+            else:
+                return
+
+        try:
+            os.startfile(score_path)
+        except Exception as e:
+            messagebox.showinfo("알림", f"파일을 열 수 없습니다:\n{e}\n\nMuseScore 4 또는 TuxGuitar를 먼저 설치해 주세요.")
 
     def _open_pdf(self):
-        if self.last_pdf_path and os.path.exists(self.last_pdf_path):
-            try:
-                os.startfile(self.last_pdf_path)
-            except Exception as e:
-                messagebox.showinfo("알림", f"PDF 파일을 열 수 없습니다:\n{e}")
+        pdf_path = self.last_pdf_path
+        default_scores = os.path.join(PROJECT_DIR, "output", "scores")
+
+        # If no PDF selected yet, prompt user to choose one
+        if not pdf_path or not os.path.exists(pdf_path):
+            chosen = filedialog.askopenfilename(
+                title="열람할 PDF 악보 파일을 선택하세요",
+                initialdir=default_scores if os.path.exists(default_scores) else PROJECT_DIR,
+                filetypes=[("PDF 파일 (*.pdf)", "*.pdf"), ("모든 파일 (*.*)", "*.*")]
+            )
+            if chosen and os.path.exists(chosen):
+                pdf_path = chosen
+                self.last_pdf_path = chosen
+                self.btn_open_pdf.configure(state="normal")
+            else:
+                return
+
+        try:
+            os.startfile(pdf_path)
+        except Exception as e:
+            messagebox.showinfo("알림", f"PDF 파일을 열 수 없습니다:\n{e}")
 
     def _open_fret_editor(self):
         score_path = self.last_score_path
@@ -515,6 +609,16 @@ class BandTranscriberApp(ctk.CTk):
                 return
 
         self.last_score_path = score_path
+        self.btn_open_score.configure(state="normal")
+
+        # Also link matching PDF if available
+        base_no_ext = os.path.splitext(score_path)[0]
+        for c in [f"{base_no_ext}_TAB.pdf", f"{base_no_ext}.pdf"]:
+            if os.path.exists(c):
+                self.last_pdf_path = c
+                self.btn_open_pdf.configure(state="normal")
+                break
+
         self.lbl_active_score.configure(
             text=f"🎼 선택된 악보: {os.path.basename(score_path)}",
             text_color="#34C759"
