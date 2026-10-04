@@ -1,10 +1,11 @@
 import os
 import subprocess
 
-lily_bin = r"C:\Users\dlwjd\AppData\Local\Microsoft\WinGet\Packages\LilyPond.LilyPond_Microsoft.Winget.Source_8wekyb3d8bbwe\lilypond-2.24.4\bin"
-lily_py = os.path.join(lily_bin, "python.exe")
-musicxml2ly_py = os.path.join(lily_bin, "musicxml2ly.py")
-lilypond_exe = os.path.join(lily_bin, "lilypond.exe")
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from src.pdf_exporter import find_lilypond
+
+lily_py, musicxml2ly_py, lilypond_exe = find_lilypond()
 
 xml_path = os.path.abspath("output/scores/Petalburg City Theme_full_score.musicxml")
 ly_path = os.path.abspath("output/scores/Petalburg City Theme_full_score.ly")

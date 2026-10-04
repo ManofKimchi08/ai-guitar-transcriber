@@ -2,8 +2,11 @@ import os
 import re
 import subprocess
 
-lily_bin = r"C:\Users\dlwjd\AppData\Local\Microsoft\WinGet\Packages\LilyPond.LilyPond_Microsoft.Winget.Source_8wekyb3d8bbwe\lilypond-2.24.4\bin"
-lilypond_exe = os.path.join(lily_bin, "lilypond.exe")
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from src.pdf_exporter import find_lilypond
+
+_, _, lilypond_exe = find_lilypond()
 
 orig_ly = "output/scores/Petalburg City Theme_full_score.ly"
 with open(orig_ly, "r", encoding="utf-8") as f:

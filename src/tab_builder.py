@@ -29,6 +29,52 @@ BASS_TUNING = {
     4: 28,  # E1
 }
 
+# MusicXML standard durations (at divisions=4 per quarter beat, 16 per 4/4 bar)
+DURATION_TO_TYPE = {
+    16: ("whole", False),
+    12: ("half", True),
+    8: ("half", False),
+    6: ("quarter", True),
+    4: ("quarter", False),
+    3: ("eighth", True),
+    2: ("eighth", False),
+    1: ("16th", False),
+}
+
+
+def decompose_duration(dur: int) -> list:
+    """Decomposes a duration in divisions into standard musical values to avoid non-standard rests."""
+    chunks = []
+    standards = [16, 12, 8, 6, 4, 3, 2, 1]
+    remaining = int(dur)
+    while remaining > 0:
+        for s in standards:
+            if s <= remaining:
+                chunks.append(s)
+                remaining -= s
+                break
+        else:
+            chunks.append(1)
+            remaining -= 1
+    return chunks
+
+
+def add_type_and_dot(note_el: ET.Element, dur: int):
+    """Adds standard <type> and optional <dot/> tags to a note or rest element."""
+    if dur in DURATION_TO_TYPE:
+        t, dot = DURATION_TO_TYPE[dur]
+        ET.SubElement(note_el, "type").text = t
+        if dot:
+            ET.SubElement(note_el, "dot")
+    else:
+        for std in [16, 8, 4, 2, 1]:
+            if dur >= std:
+                t, _ = DURATION_TO_TYPE[std]
+                ET.SubElement(note_el, "type").text = t
+                break
+        else:
+            ET.SubElement(note_el, "type").text = "16th"
+
 
 def get_fret_candidates(pitch: int, tuning: dict, max_fret: int = 22):
     """Finds all valid (string, fret) pairs for a given MIDI pitch."""
@@ -310,6 +356,7 @@ def build_musicxml_score(
                 ET.SubElement(note_el, "rest")
                 ET.SubElement(note_el, "duration").text = str(bar_divisions)
                 ET.SubElement(note_el, "voice").text = "1"
+                add_type_and_dot(note_el, bar_divisions)
             else:
                 # Group and quantize notes by division slot (0..15)
                 slots = {}
@@ -317,26 +364,32 @@ def build_musicxml_score(
                     rel_start = max(0.0, note_obj.start - bar_start_time)
                     slot = min(15, max(0, int(round(rel_start / seconds_per_div))))
                     raw_dur = max(1, int(round((note_obj.end - note_obj.start) / seconds_per_div)))
-                    dur_slots = min(bar_divisions - slot, raw_dur)
                     if slot not in slots:
                         slots[slot] = []
-                    slots[slot].append((note_obj, string_num, fret_num, dur_slots))
+                    slots[slot].append((note_obj, string_num, fret_num, raw_dur))
 
                 sorted_slots = sorted(slots.keys())
-                current_div = 0
+                cursor = 0
 
-                for slot in sorted_slots:
-                    # Fill rest gap before this note slot
-                    if slot > current_div:
-                        gap_dur = slot - current_div
-                        r_note = ET.SubElement(measure_el, "note")
-                        ET.SubElement(r_note, "rest")
-                        ET.SubElement(r_note, "duration").text = str(gap_dur)
-                        ET.SubElement(r_note, "voice").text = "1"
-                        current_div = slot
+                for i, slot in enumerate(sorted_slots):
+                    # Fill rest gap before this note slot using standard rest durations
+                    if slot > cursor:
+                        gap_dur = slot - cursor
+                        for chunk in decompose_duration(gap_dur):
+                            r_note = ET.SubElement(measure_el, "note")
+                            ET.SubElement(r_note, "rest")
+                            ET.SubElement(r_note, "duration").text = str(chunk)
+                            ET.SubElement(r_note, "voice").text = "1"
+                            add_type_and_dot(r_note, chunk)
+                        cursor = slot
+
+                    # Determine note duration strictly bounded by next slot or end of bar
+                    next_slot = sorted_slots[i + 1] if (i + 1 < len(sorted_slots)) else bar_divisions
+                    max_allowed = max(1, next_slot - slot)
 
                     slot_items = slots[slot]
-                    slot_dur = max(item[3] for item in slot_items)
+                    raw_slot_dur = max(item[3] for item in slot_items)
+                    slot_dur = min(max_allowed, raw_slot_dur)
 
                     for idx, (n_obj, s_num, f_num, _) in enumerate(slot_items):
                         n_el = ET.SubElement(measure_el, "note")
@@ -352,6 +405,7 @@ def build_musicxml_score(
 
                         ET.SubElement(n_el, "duration").text = str(slot_dur)
                         ET.SubElement(n_el, "voice").text = "1"
+                        add_type_and_dot(n_el, slot_dur)
 
                         # Tablature notation for string & fret
                         if s_num is not None and f_num is not None:
@@ -360,15 +414,17 @@ def build_musicxml_score(
                             ET.SubElement(tech, "string").text = str(s_num)
                             ET.SubElement(tech, "fret").text = str(f_num)
 
-                    current_div = min(bar_divisions, slot + slot_dur)
+                    cursor += slot_dur
 
-                # Fill trailing rest if measure is not full
-                if current_div < bar_divisions:
-                    trail_dur = bar_divisions - current_div
-                    r_note = ET.SubElement(measure_el, "note")
-                    ET.SubElement(r_note, "rest")
-                    ET.SubElement(r_note, "duration").text = str(trail_dur)
-                    ET.SubElement(r_note, "voice").text = "1"
+                # Fill trailing rest if measure is not full using standard rest durations
+                if cursor < bar_divisions:
+                    trail_dur = bar_divisions - cursor
+                    for chunk in decompose_duration(trail_dur):
+                        r_note = ET.SubElement(measure_el, "note")
+                        ET.SubElement(r_note, "rest")
+                        ET.SubElement(r_note, "duration").text = str(chunk)
+                        ET.SubElement(r_note, "voice").text = "1"
+                        add_type_and_dot(r_note, chunk)
 
     tree = ET.ElementTree(score)
     ET.indent(tree, space="  ", level=0)

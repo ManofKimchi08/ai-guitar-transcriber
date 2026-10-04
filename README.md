@@ -64,6 +64,47 @@ An end-to-end AI music transcription suite that isolates band instruments (Drums
 
 ---
 
+### 4. 운지 수정 후 즉시 갱신된 타브 악보 (Edited Score Preview)
+> 가상 프렛보드에서 원하는 대안 운지를 클릭하여 즉시 재출력된 최신 악보. 이전 구버전 악보와의 충돌 없이 깔끔하게 갱신됩니다.
+
+<div align="center">
+  <img src="docs/images/edited_score_preview.png" alt="Edited TAB Score Preview" width="850"/>
+</div>
+
+---
+
+## 📝 최신 업데이트 내역 (Release Notes & Changelog)
+
+### 🏷️ Version 1.2.0 (2026-10-04) - 안정화 및 음질/악보 정밀도 대폭 향상
+
+> **태그 (Tags):** `v1.2.0`, `sota-accuracy`, `batch-fix`, `chord-voicings`, `musicxml-fix`, `crepe-full`
+
+이번 업데이트는 초보자 설치 안정성, 7th 코드 화음 인식률, MusicXML 규격 준수, 그리고 인공지능 피치 추적 해상도를 획기적으로 개선한 메이저 업데이트입니다.
+
+#### 1. 🚀 `start.bat` 원클릭 배치 스크립트 전면 개편
+- **Cmd 문법 구문 오류 완벽 해결**: 윈도우 `cmd.exe`에서 `if (...)` 괄호 블록 내 괄호/특수기호로 인한 조기 종료 및 syntax error를 제거하고 안정적인 라벨 점프(`goto`) 구조로 재설계.
+- **CRLF 개행 및 인코딩 무결성**: `.gitattributes` 도입으로 Git 체크아웃 시 항상 윈도우 표준 CRLF 개행을 유지하도록 보장.
+- **초고속 재실행 보장**: 가상환경과 PyTorch 의존성이 정상 완료되면 `venv\.installed` 플래그를 생성하여, 재실행 시 무의미한 재설치 검사를 건너뛰고 1초 만에 GUI를 실행.
+
+#### 2. 🎸 리듬 기타 7th 코드 보이싱 전체 확장 (48개 템플릿 100% 매핑)
+- 기존 누락되어 있던 **C#7, D#7, F#7, G#7, A#7** 등 도미넌트 7th 코드 보이싱 템플릿을 전격 추가.
+- 이제 12개 모든 반음계의 메이저(Major), 마이너(Minor), 세븐스(7th), 마이너세븐스(m7) 총 48개 코드 템플릿이 6현 타브 지판에 빠짐없이 정확한 운지로 자동 채보됩니다.
+
+#### 3. 🎼 MusicXML 4/4 박자 마디 누적 오버플로우 차단 및 음표 `<type>` 표준 태그 도입
+- **마디 박자 정밀 퀀타이즈**: 마디당 16디비전(4/4박)을 초과하지 않도록 음표 길이를 다음 슬롯까지로 엄격히 바운딩(`slot_dur = min(max_allowed, raw_dur)`).
+- **표준 쉼표 분할 알고리즘**: 비표준 길이의 빈 공간을 온쉼표, 2분쉼표, 점4분쉼표, 4분쉼표, 8분쉼표, 16분쉼표 등 음악 표준 단위로 자동 분해하여 배치.
+- **표준 `<type>` 태그 탑재**: MuseScore 4, TuxGuitar, Guitar Pro 등 모든 상용 악보 뷰어에서 경고 없이 완벽하게 음표 머리가 렌더링되도록 `<type>` (`whole`, `half`, `quarter`, `eighth`, `16th`) 및 `<dot/>` 태그를 완벽하게 생성.
+
+#### 4. 🧠 SOTA TorchCREPE `full` 모델 적용 & 리드 기타 중저역 주파수 완벽 보존
+- **TorchCREPE 최고 사양 360-bin 모델 탑재**: 기존 `tiny` 모델에서 가장 높은 노이즈 억제력과 피치 정밀도를 지닌 `full` 모델을 기본 탑재.
+- **리드 기타 하이패스 필터 개선**: 기존 420Hz 고역 통과 필터로 인해 E2~G4(82Hz~392Hz) 대역의 기타 솔로/리프 음표가 손실되던 문제를 해결하고, 80Hz 럼블 필터로 교체하여 기타 전 음역대를 온전히 트랜스크라이브.
+
+#### 5. 📄 LilyPond 동적 자동 탐색 및 스마트 PDF 버전 관리 지원
+- 하드코딩된 특정 사용자 폴더 경로를 완전히 제거하고, `shutil.which` 및 WinGet / Program Files 디렉터리 동적 글롭 탐색 엔진으로 어느 PC에서나 LilyPond가 자동 감지되도록 구현.
+- 가상 프렛보드에서 악보 수정 시, 현재 활성화된 악보 스타일(`_TAB.pdf`, `_TAB_Score.pdf`, `.pdf`)을 정확히 타겟팅하여 이전 PDF 삭제 또는 타임스탬프 백업(`_backup.pdf`)을 사용자 선택에 따라 안전하게 처리.
+
+---
+
 ## 🌟 핵심 기능 요약 (Key Features)
 
 ### 1. 🎧 Meta Demucs v4 기반 6-Stem 고속 음원 분리
@@ -106,7 +147,7 @@ winget install Gyan.FFmpeg
 winget install LilyPond.LilyPond
 
 # 3. MuseScore 4 설치 (선택 권장: 생성된 MusicXML 악보 열람 및 실시간 연주 재생)
-winget install UltimateGuitar.MuseScore
+winget install Musescore.Musescore
 ```
 > [!TIP]
 > `winget`으로 설치한 뒤에는 열려 있는 터미널 또는 명령창을 한 번 닫고 새로 열어야 환경 변수(PATH)가 정상 적용됩니다.

@@ -674,13 +674,22 @@ class FretboardEditorDialog(ctk.CTkToplevel):
 
     def _save_and_reexport_pdf(self):
         """Saves MusicXML and re-compiles TAB PDF via LilyPond, prompting about old PDF deletion."""
-        # 1. Check for existing PDF candidate
+        # 1. Check for existing PDF candidate based on active style
         xml_base = os.path.splitext(os.path.abspath(self.xml_path))[0]
-        pdf_candidates = [
+        style_map = {
+            "both": f"{xml_base}_TAB_Score.pdf",
+            "tab": f"{xml_base}_TAB.pdf",
+            "standard": f"{xml_base}.pdf",
+        }
+        primary_pdf = style_map.get(getattr(self, "style", "tab"), f"{xml_base}_TAB.pdf")
+        all_candidates = [
+            primary_pdf,
             f"{xml_base}_TAB.pdf",
             f"{xml_base}_TAB_Score.pdf",
             f"{xml_base}.pdf",
         ]
+        seen = set()
+        pdf_candidates = [x for x in all_candidates if not (x in seen or seen.add(x))]
         existing_pdf = None
         for cand in pdf_candidates:
             if os.path.exists(cand):

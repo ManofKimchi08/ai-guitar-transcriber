@@ -66,7 +66,7 @@ def transcribe_with_crepe(
     audio_path: str,
     output_midi_path: str,
     instrument_name: str = "bass",
-    model: str = "tiny",
+    model: str = "full",
     device: str = None
 ) -> str:
     """

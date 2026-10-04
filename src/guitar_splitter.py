@@ -39,11 +39,10 @@ def split_guitar_track(input_wav_path: str, output_dir: str) -> dict:
     
     # Handle single channel (mono) vs dual channel (stereo)
     if audio.ndim == 1:
-        # Mono file: use spectral crossover
-        # Lower register & chords -> Rhythm, Higher register & melody -> Lead
-        crossover_freq = 420.0  # Around G#4, separation between chord roots and upper melody
-        rhythm_audio = butter_filter(audio, crossover_freq, sr, btype='low')
-        lead_audio = butter_filter(audio, crossover_freq, sr, btype='high')
+        # Mono file: highpass at 80Hz for lead to eliminate sub-bass rumble while preserving full guitar range (E2=82Hz)
+        # Rhythm gets lowpass to focus on rhythm chord fundamentals
+        rhythm_audio = butter_filter(audio, 1200.0, sr, btype='low')
+        lead_audio = butter_filter(audio, 80.0, sr, btype='high')
     else:
         # Stereo file: analyze stereo correlation
         left = audio[:, 0]
@@ -65,17 +64,14 @@ def split_guitar_track(input_wav_path: str, output_dir: str) -> dict:
         
         # If significant stereo separation exists (typical in studio rock/pop)
         if correlation < 0.90 and energy_side > 0.05 * (energy_mid + 1e-9):
-            # Lead is center (Mid), Rhythm is stereo side (convert to stereo pair [side, -side])
-            lead_audio = mid
+            # Lead is center (Mid) with sub-bass cut, Rhythm is stereo side
+            lead_audio = butter_filter(mid, 80.0, sr, btype='high')
             # Reconstruct stereo rhythm with original spatial feel
             rhythm_audio = np.stack([side, -side], axis=1)
         else:
-            # Low stereo separation: Hybrid M/S + Spectral split
-            crossover_freq = 420.0
-            rhythm_low = butter_filter(mid, crossover_freq, sr, btype='low')
-            lead_high = butter_filter(mid, crossover_freq, sr, btype='high')
-            
-            lead_audio = lead_high + side * 0.3
+            # Low stereo separation: Hybrid M/S preserving guitar fundamental range
+            lead_audio = butter_filter(mid, 80.0, sr, btype='high') + side * 0.3
+            rhythm_low = butter_filter(mid, 1200.0, sr, btype='low')
             rhythm_audio = np.stack([rhythm_low + side * 0.7, rhythm_low - side * 0.7], axis=1)
 
     # Normalize audio to prevent clipping

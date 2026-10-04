@@ -10,23 +10,46 @@ import subprocess
 
 
 def find_lilypond():
-    """Finds LilyPond executable and python environment on Windows."""
+    """Finds LilyPond executable and python environment on Windows, Linux, and macOS."""
+    import shutil
+
+    # 1. Check if lilypond is in system PATH
+    lp_which = shutil.which("lilypond") or shutil.which("lilypond.exe")
+    if lp_which:
+        lp_dir = os.path.dirname(os.path.abspath(lp_which))
+        py = os.path.join(lp_dir, "python.exe") if os.name == 'nt' else shutil.which("python3") or shutil.which("python")
+        m2l = os.path.join(lp_dir, "musicxml2ly.py")
+        if not os.path.exists(m2l):
+            m2l_which = shutil.which("musicxml2ly") or shutil.which("musicxml2ly.py")
+            if m2l_which:
+                m2l = m2l_which
+        if os.path.exists(lp_which) and os.path.exists(py) and os.path.exists(m2l):
+            return py, m2l, lp_which
+
+    # 2. Check Windows WinGet / Program Files standard paths
     appdata = os.environ.get("LOCALAPPDATA", "")
-    pattern = os.path.join(appdata, r"Microsoft\WinGet\Packages\*LilyPond*\*\bin")
-    matches = glob.glob(pattern)
-    
-    candidates = matches + [
-        r"C:\Users\dlwjd\AppData\Local\Microsoft\WinGet\Packages\LilyPond.LilyPond_Microsoft.Winget.Source_8wekyb3d8bbwe\lilypond-2.24.4\bin",
-        r"C:\Program Files\LilyPond\bin",
+    program_files = os.environ.get("ProgramFiles", r"C:\Program Files")
+    program_files_x86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
+
+    search_patterns = [
+        os.path.join(appdata, r"Microsoft\WinGet\Packages\*LilyPond*\*\bin"),
+        os.path.join(appdata, r"Microsoft\WinGet\Packages\*LilyPond*\bin"),
+        os.path.join(appdata, r"Programs\*LilyPond*\bin"),
+        os.path.join(program_files, r"LilyPond*\bin"),
+        os.path.join(program_files_x86, r"LilyPond*\bin"),
     ]
-    
+
+    candidates = []
+    for pat in search_patterns:
+        candidates.extend(glob.glob(pat))
+
     for d in candidates:
         lp = os.path.join(d, "lilypond.exe")
         py = os.path.join(d, "python.exe")
         m2l = os.path.join(d, "musicxml2ly.py")
         if os.path.exists(lp) and os.path.exists(py) and os.path.exists(m2l):
             return py, m2l, lp
-            
+
     return None, None, None
 
 
