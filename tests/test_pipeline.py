@@ -312,6 +312,20 @@ class TestBandTranscriber(unittest.TestCase):
         self.assertEqual(onset_slots(bar1), [(12, "C")])  # 0.5 s before the downbeat = 4 sixteenths early
         self.assertEqual(onset_slots(bar2), [(0, "D")])
 
+    def test_silent_intro_adds_no_empty_bars(self):
+        """Music starting on the third downbeat begins in bar 1, not after two empty bars."""
+        notes = [pretty_midi.Note(velocity=90, pitch=60, start=4.3, end=4.8)]
+        pm = pretty_midi.PrettyMIDI()
+        inst = pretty_midi.Instrument(program=29)
+        inst.notes = notes
+        pm.instruments.append(inst)
+        mid = os.path.join(self.test_dir, "test_late_start.mid")
+        pm.write(mid)
+        xml_out = os.path.join(self.test_dir, "test_late_start.musicxml")
+        build_musicxml_score("", "", mid, "", xml_out, selected_parts=["lead"], bpm=120.0, downbeat=0.3)
+        first = ET.parse(xml_out).getroot().find("./part/measure[@number='1']")
+        self.assertIsNone(first.findall("note")[0].find("rest"))  # the note opens bar 1
+
     def test_editor_moves_a_whole_tie_chain(self):
         notes = [pretty_midi.Note(velocity=90, pitch=64, start=1.5, end=3.0)]
         self._build_single_part("lead", notes)

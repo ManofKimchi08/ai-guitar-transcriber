@@ -638,13 +638,15 @@ def build_musicxml_score(
     seconds_per_div = seconds_per_beat / divisions
     
     # Snap every part onto one global 16th-note grid whose bar lines fall on the
-    # downbeats: bar 1 starts at the last downbeat before the music (minus a little
-    # slack), so anything earlier is written as a pickup with leading rests.
+    # downbeats: bar 1 is the bar holding the first note (minus a little slack), so
+    # music before a downbeat becomes a pickup and a silent intro adds no empty bars.
     bar_seconds = seconds_per_div * bar_divisions
-    origin = downbeat - bar_seconds * np.ceil((downbeat - seconds_per_div / 2) / bar_seconds)
+    starts = [(n if ptype == "drum" else n[0]).start for *_, data, ptype in parts_info for n in data]
+    earliest = min(starts) if starts else downbeat
+    origin = downbeat + bar_seconds * np.floor((earliest - downbeat + seconds_per_div / 2) / bar_seconds)
 
     part_segments = []
-    last_slot = int(round((2.0 - origin) / seconds_per_div))  # at least ~2 s of score
+    last_slot = int(round(2.0 / seconds_per_div))  # at least ~2 s of score
     for part_key, pid, pname, pabbr, data, ptype in parts_info:
         items = [(n, None, None) for n in data] if ptype == "drum" else data
         events = quantize_onsets(items, seconds_per_div, merge_same_slot=(ptype == "drum"), origin=origin)

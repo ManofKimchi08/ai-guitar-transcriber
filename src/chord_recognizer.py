@@ -9,7 +9,6 @@ import os
 import numpy as np
 import librosa
 import pretty_midi
-import soundfile as sf
 
 
 # 12 chromatic pitch classes
@@ -106,72 +105,92 @@ GUITAR_BASE_PITCHES = {
 }
 
 
-def recognize_chords(audio_path: str, segment_sec: float = 0.5):
-    """
-    Analyzes audio segments and recognizes the primary guitar chord progression.
-    Returns list of: [{'start': t0, 'end': t1, 'chord': 'Am', 'voicing': [(s, f), ...]}]
-    """
-    y, sr = sf.read(audio_path)
-    if y.ndim > 1:
-        y = np.mean(y, axis=1)
+# A frame whose best template similarity stays below this is "no chord" (noise, single
+# notes, bleed); a flat 12-note chroma already scores ~0.58 against a 7th chord.
+NO_CHORD_SCORE = 0.62
+# Frames this far below the track's loud level (95th percentile RMS) count as silence
+SILENCE_RATIO = 0.1
+# String harmonics reinforce root and fifth, so a triad's third can look weak; a power
+# chord must beat the triads by this margin (tuned on synthetic strums: 88% -> 96%)
+POWER_CHORD_PENALTY = 0.05
 
-    duration = len(y) / sr
-    hop_length = 512
-    chroma = librosa.feature.chroma_cqt(y=y, sr=sr, hop_length=hop_length)
 
-    frames_per_sec = sr / hop_length
-    seg_frames = max(1, int(segment_sec * frames_per_sec))
+def recognize_chords(audio_path: str, segment_sec: float = 0.5, strums: bool = True):
+    """
+    Recognizes the chord progression and, within it, the strums.
+
+    1. Chroma (CQT) of the harmonic part; frames far below the track's loud level
+       are silence.
+    2. Every frame is scored against the 48 chord templates and a "no chord" state.
+    3. A Viterbi pass (HMM with sticky self-transitions) smooths the labels so a
+       chord does not flicker on passing tones; chords shorter than `segment_sec`
+       merge into a neighbour.
+    4. Chord changes snap to the nearest strum (onset), and with `strums` every
+       strum inside a chord re-attacks it, so the TAB shows the strumming rhythm.
+
+    Returns [{'start': t0, 'end': t1, 'chord': 'Am', 'voicing': [(s, f), ...]}].
+    """
+    y, sr = librosa.load(audio_path, sr=22050, mono=True)
+    hop = 512
+    if len(y) < hop * 4:
+        return []
+
+    rms = librosa.feature.rms(y=y, frame_length=2048, hop_length=hop)[0]
+    loud = float(np.percentile(rms, 95))
+    if loud < 1e-4:
+        return []
+
+    chroma = librosa.feature.chroma_cqt(y=librosa.effects.harmonic(y), sr=sr, hop_length=hop)
+    n = min(chroma.shape[1], len(rms))
+    chroma, rms = chroma[:, :n], rms[:n]
+    silent = rms < loud * SILENCE_RATIO
+
+    names = list(CHORD_PROFILES)
+    templates = np.stack([CHORD_PROFILES[c] / np.linalg.norm(CHORD_PROFILES[c]) for c in names])
+    unit = chroma / (np.linalg.norm(chroma, axis=0, keepdims=True) + 1e-9)
+    is_power = np.array([c.endswith("5") for c in names], dtype=float)[:, None]
+    scores = np.vstack([templates @ unit - POWER_CHORD_PENALTY * is_power, np.full((1, n), NO_CHORD_SCORE)])
+    scores[:-1, silent] = 0.0
+    scores[-1, silent] = 1.0
+
+    probs = np.exp(25.0 * (scores - scores.max(axis=0, keepdims=True)))
+    probs /= probs.sum(axis=0, keepdims=True)
+    path = librosa.sequence.viterbi(probs, librosa.sequence.transition_loop(len(names) + 1, 0.97))
+
+    # Runs of equal states -> [start_frame, end_frame, state]. A too-short chord right
+    # after another chord is flicker and joins it; "no chord" runs (silence) stay as they
+    # are, so a chord never spreads into the silence around it.
+    no_chord = len(names)
+    bounds = np.flatnonzero(np.diff(path)) + 1
+    runs = [[a, b, int(path[a])] for a, b in zip(np.r_[0, bounds], np.r_[bounds, n])]
+    min_frames = segment_sec * sr / hop
+    merged = []
+    for run in runs:
+        if merged and run[2] == merged[-1][2]:
+            merged[-1][1] = run[1]
+        elif (merged and run[1] - run[0] < min_frames
+              and run[2] != no_chord and merged[-1][2] != no_chord):
+            merged[-1][1] = run[1]
+        else:
+            merged.append(run)
+
+    times = librosa.frames_to_time(np.arange(n + 1), sr=sr, hop_length=hop)
+    onsets = librosa.onset.onset_detect(y=y, sr=sr, hop_length=hop, units="time", wait=4)
 
     results = []
-    num_segs = int(np.ceil(chroma.shape[1] / seg_frames))
-
-    last_chord = None
-    chord_start = 0.0
-
-    for i in range(num_segs):
-        start_f = i * seg_frames
-        end_f = min((i + 1) * seg_frames, chroma.shape[1])
-        if start_f >= end_f:
-            break
-
-        seg_chroma = np.mean(chroma[:, start_f:end_f], axis=1)
-        norm = np.linalg.norm(seg_chroma)
-        if norm < 1e-4:
-            curr_chord = None
-        else:
-            seg_chroma = seg_chroma / norm
-
-            best_sim = -1.0
-            best_chord = "C"
-
-            for chord_name, template in CHORD_PROFILES.items():
-                sim = np.dot(seg_chroma, template) / (np.linalg.norm(template) + 1e-9)
-                if sim > best_sim:
-                    best_sim = sim
-                    best_chord = chord_name
-
-            curr_chord = best_chord if best_sim > 0.45 else None
-
-        t_now = start_f / frames_per_sec
-        if curr_chord != last_chord:
-            if last_chord is not None:
-                results.append({
-                    "start": chord_start,
-                    "end": t_now,
-                    "chord": last_chord,
-                    "voicing": STANDARD_VOICINGS.get(last_chord, STANDARD_VOICINGS["C"])
-                })
-            last_chord = curr_chord
-            chord_start = t_now
-
-    if last_chord is not None:
-        results.append({
-            "start": chord_start,
-            "end": duration,
-            "chord": last_chord,
-            "voicing": STANDARD_VOICINGS.get(last_chord, STANDARD_VOICINGS["C"])
-        })
-
+    for a, b, state in merged:
+        if state == no_chord:
+            continue
+        start, end = float(times[a]), float(times[b])
+        near = [t for t in onsets if abs(t - start) <= 0.15]
+        if near:
+            start = min(near, key=lambda t: abs(t - start))
+        attacks = [start]
+        if strums:
+            attacks += [float(t) for t in onsets if start + 0.08 < t < end - 0.08]
+        chord = names[state]
+        for s, e in zip(attacks, attacks[1:] + [end]):
+            results.append({"start": s, "end": e, "chord": chord, "voicing": STANDARD_VOICINGS[chord]})
     return results
 
 
