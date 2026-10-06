@@ -3,8 +3,8 @@ $desktop = [Environment]::GetFolderPath('Desktop')
 $shortcutPath = Join-Path $desktop "AI Band Transcriber.lnk"
 
 $shortcut = $wsh.CreateShortcut($shortcutPath)
-$shortcut.TargetPath = "C:\Users\dlwjd\.gemini\antigravity\scratch\ai_band_transcriber\AI_Band_Transcriber.exe"
-$shortcut.WorkingDirectory = "C:\Users\dlwjd\.gemini\antigravity\scratch\ai_band_transcriber"
+$shortcut.TargetPath = Join-Path $PSScriptRoot "AI_Band_Transcriber.exe"
+$shortcut.WorkingDirectory = $PSScriptRoot
 $shortcut.Description = "AI Band Transcriber (TAB & Sheet Music Generator)"
 $shortcut.Save()
 

@@ -178,7 +178,7 @@ winget install Musescore.Musescore
 
 ### Step 4: 결과물 열람
 작업이 완료되면 하단 버튼들이 활성화됩니다:
-- **`📁 결과 폴더 열기`**: 분리된 무손실 오디오 WAV(`output/stems/`), 악기별 MIDI(`output/midi/`), 악보 파일(`output/scores/`)이 들어있는 폴더를 엽니다.
+- **`📁 결과 폴더 열기`**: 곡별 결과 폴더를 엽니다. 분리된 무손실 오디오 WAV(`output/<곡명>/stems/`), 악기별 MIDI(`output/<곡명>/midi/`), 악보 파일(`output/<곡명>/scores/`)이 곡마다 따로 저장되어 다른 곡의 결과와 섞이지 않습니다.
 - **`🎼 MuseScore / 악보 프로그램으로 열기`**: 생성된 MusicXML 악보를 MuseScore 4에서 즉시 열어 사운드 재생 및 추가 수정을 할 수 있습니다.
 - **`📄 PDF 악보 열기`**: 완성된 고화질 벡터 PDF 악보를 바로 열람합니다.
 
@@ -251,10 +251,11 @@ ai_band_transcriber/
 ├── run_gui.bat                # 가상환경 배치 실행 스크립트
 ├── Launcher.cs                # 런처 C# 소스 코드
 ├── app_gui.py                 # CustomTkinter 반응형 다크모드 메인 GUI
-├── main.py                    # CLI 파이프라인 진입점
+├── main.py                    # CLI 진입점 (src/pipeline.py 호출)
 ├── requirements.txt           # Python 필수 라이브러리 목록
 │
 ├── src/                       # 핵심 오디오 분석 및 채보 엔진
+│   ├── pipeline.py            # CLI·GUI 공용 변환 파이프라인 (곡별 출력 폴더)
 │   ├── separator.py           # Meta Demucs 6-stem 음원 분리
 │   ├── guitar_splitter.py     # M/S 기반 Lead / Rhythm 기타 분리
 │   ├── pitch_transcriber.py   # TorchCREPE GPU 고정밀 F0 피치 트래커

@@ -59,14 +59,14 @@ def separate_stems(
 
     # Demucs saves files in: output_dir / model_name / base_name / stem.wav
     stem_dir = os.path.join(output_dir, model_name, base_name)
-    if not os.path.exists(stem_dir):
-        # Check subdirectories
-        candidates = [d for d in os.listdir(output_dir) if os.path.isdir(os.path.join(output_dir, d))]
-        if candidates:
-            cand_sub = os.path.join(output_dir, candidates[0])
-            sub_cand = [d for d in os.listdir(cand_sub) if os.path.isdir(os.path.join(cand_sub, d))]
-            if sub_cand:
-                stem_dir = os.path.join(cand_sub, sub_cand[0])
+    model_dir = os.path.join(output_dir, model_name)
+    if not os.path.exists(stem_dir) and os.path.isdir(model_dir):
+        # Demucs may rename the track folder; take this model's newest one
+        # (never a sibling folder such as stems/ or midi/).
+        tracks = [os.path.join(model_dir, d) for d in os.listdir(model_dir)
+                  if os.path.isdir(os.path.join(model_dir, d))]
+        if tracks:
+            stem_dir = max(tracks, key=os.path.getmtime)
 
     expected_stems = ["drums", "bass", "guitar", "vocals", "piano", "other"]
     stems = {}

@@ -38,6 +38,8 @@ def download_youtube_audio(url: str, output_dir: str, progress_hook=None) -> tup
         }],
         'quiet': True,
         'no_warnings': True,
+        # A watch?v=...&list=... link must fetch that one video, not the whole playlist
+        'noplaylist': True,
     }
 
     if progress_hook:
@@ -46,10 +48,13 @@ def download_youtube_audio(url: str, output_dir: str, progress_hook=None) -> tup
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
         title = info.get('title', 'youtube_audio')
-        safe_title = sanitize_filename(title)
-        
-        # Determine output file path
-        wav_path = os.path.join(output_dir, f"{safe_title}.wav")
+
+        # yt-dlp reports where the converted WAV actually landed; its filename
+        # sanitizing differs from ours, so trust that before guessing.
+        downloads = info.get('requested_downloads') or []
+        wav_path = downloads[-1].get('filepath') if downloads else None
+        if not wav_path or not os.path.exists(wav_path):
+            wav_path = os.path.join(output_dir, f"{sanitize_filename(title)}.wav")
         if not os.path.exists(wav_path):
             # Fallback search if title formatting differs slightly
             candidates = [
