@@ -86,16 +86,59 @@ def get_fret_candidates(pitch: int, tuning: dict, max_fret: int = 22):
     return candidates
 
 
+def _chord_shape_cost(shape: list, string_order: list) -> float:
+    """
+    Playability cost of a chord shape [(string, fret), ...]: prefers a small fret
+    span (stretches past 4 frets are heavily penalized), a low neck position, and
+    no muted strings in the middle of the strum.
+    """
+    fretted = [f for _, f in shape if f > 0]
+    span = (max(fretted) - min(fretted)) if fretted else 0
+    position = min(fretted) if fretted else 0
+    idx = sorted(string_order.index(s) for s, _ in shape)
+    inner_gaps = (idx[-1] - idx[0] + 1) - len(idx)
+    return span + max(0, span - 3) * 4.0 + position * 0.3 + inner_gaps * 2.5
+
+
 def assign_chord_strings(chord_notes: list, tuning: dict, max_fret: int = 16) -> list:
     """
     Assigns each simultaneous note in a guitar/bass chord to a unique physical string.
+    Ascending pitches go on ascending strings, and among those shapes the most
+    playable one wins (see _chord_shape_cost), so chord voicings that lost their
+    string info on the way through MIDI come back as playable shapes.
     Guarantees 0 string collisions per chord.
     """
-    res = []
-    used_strings = set()
+    if not chord_notes:
+        return []
+
     sorted_notes = sorted(chord_notes, key=lambda x: x.pitch)
     string_order = sorted(list(tuning.keys()), reverse=True)  # [6, 5, 4, 3, 2, 1]
-    
+
+    best_shape, best_cost = None, float('inf')
+
+    def search(i, first_string_idx, shape):
+        nonlocal best_shape, best_cost
+        if i == len(sorted_notes):
+            cost = _chord_shape_cost(shape, string_order)
+            if cost < best_cost:
+                best_shape, best_cost = list(shape), cost
+            return
+        for k in range(first_string_idx, len(string_order)):
+            s = string_order[k]
+            f = sorted_notes[i].pitch - tuning[s]
+            if 0 <= f <= max_fret:
+                shape.append((s, f))
+                search(i + 1, k + 1, shape)
+                shape.pop()
+
+    search(0, 0, [])
+    if best_shape is not None:
+        return [(n, s, f) for n, (s, f) in zip(sorted_notes, best_shape)]
+
+    # No shape fits every note (more notes than strings, or out of range):
+    # place what fits greedily, lowest fret first.
+    res = []
+    used_strings = set()
     for n in sorted_notes:
         cands = []
         for s in string_order:
@@ -219,6 +262,52 @@ def optimize_tablature(notes: list, tuning: dict, max_fret: int = 22) -> list:
     return optimal_path
 
 
+def quantize_onsets(items: list, seconds_per_div: float, merge_same_slot: bool = False,
+                    onset_tol: float = 0.035) -> list:
+    """
+    Snaps (note, string, fret) items onto a global grid of `seconds_per_div` slots.
+    Returns [(slot, [items...], dur_in_divs), ...] with strictly increasing slots.
+
+    Notes struck together (within onset_tol) share a slot as one chord. For pitched
+    parts, a separately struck note that rounds into an occupied slot moves to the
+    next slot if that is at most one division late, and is dropped otherwise:
+    stacking it would turn a fast run into an unplayable same-string chord.
+    With merge_same_slot (drums), different instruments may share a slot instead.
+    """
+    groups = []
+    for it in sorted(items, key=lambda it: (it[0].start, it[0].pitch)):
+        if groups and it[0].start - groups[-1][0][0].start <= onset_tol:
+            groups[-1].append(it)
+        else:
+            groups.append([it])
+
+    events = []
+    for group in groups:
+        if not merge_same_slot:
+            # A chord can hold only one note per string; keep the first on each
+            kept, used_strings = [], set()
+            for it in group:
+                if it[1] not in used_strings:
+                    used_strings.add(it[1])
+                    kept.append(it)
+            group = kept
+        pos = group[0][0].start / seconds_per_div
+        slot = int(round(pos))
+        dur = max(1, int(round(max(n.end - n.start for n, _, _ in group) / seconds_per_div)))
+        if events and slot <= events[-1][0]:
+            last_slot, last_items, last_dur = events[-1]
+            if merge_same_slot:
+                seen = {n.pitch for n, _, _ in last_items}
+                last_items.extend(it for it in group if it[0].pitch not in seen)
+                events[-1] = (last_slot, last_items, max(last_dur, dur))
+                continue
+            slot = last_slot + 1
+            if slot - pos > 1.0:
+                continue  # too dense for a 16th-note grid
+        events.append((slot, group, dur))
+    return events
+
+
 def build_musicxml_score(
     drum_midi_path: str,
     bass_midi_path: str,
@@ -288,42 +377,34 @@ def build_musicxml_score(
     # Metric & Tempo setup
     bpm = max(45.0, min(240.0, float(bpm)))
     seconds_per_beat = 60.0 / bpm
-    seconds_per_bar = seconds_per_beat * 4.0
     divisions = 4  # 16th note divisions per quarter beat (16 divisions per 4/4 bar)
     bar_divisions = 16
     seconds_per_div = seconds_per_beat / divisions
     
-    all_end_times = [2.0]
+    # Snap every part onto one global 16th-note grid, then split it into bars
+    part_events = []
+    last_slot = int(round(2.0 / seconds_per_div))  # at least ~2 s of score
     for pid, pname, pabbr, data, ptype in parts_info:
-        if ptype == "drum":
-            all_end_times.extend([n.end for n in data])
-        else:
-            all_end_times.extend([n.end for n, s, f in data])
+        items = [(n, None, None) for n in data] if ptype == "drum" else data
+        events = quantize_onsets(items, seconds_per_div, merge_same_slot=(ptype == "drum"))
+        for slot, _, dur in events:
+            last_slot = max(last_slot, slot + dur)
+        part_events.append(events)
 
-    max_time = max(all_end_times)
-    total_bars = int(np.ceil(max_time / seconds_per_bar)) + 1
-    
+    total_bars = int(np.ceil(last_slot / bar_divisions)) + 1
+
     pitch_names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 
-    for pid, pname, pabbr, data, ptype in parts_info:
+    for (pid, pname, pabbr, data, ptype), events in zip(parts_info, part_events):
         part_el = ET.SubElement(score, "part", id=pid)
-        
-        data_by_bar = [[] for _ in range(total_bars + 1)]
-        if ptype == "drum":
-            for n in data:
-                b_idx = int(n.start // seconds_per_bar) + 1
-                if 1 <= b_idx <= total_bars:
-                    data_by_bar[b_idx].append((n, None, None))
-        else:
-            for n, s, f in data:
-                b_idx = int(n.start // seconds_per_bar) + 1
-                if 1 <= b_idx <= total_bars:
-                    data_by_bar[b_idx].append((n, s, f))
+
+        events_by_bar = [[] for _ in range(total_bars + 1)]
+        for slot, slot_items, dur in events:
+            events_by_bar[slot // bar_divisions + 1].append((slot % bar_divisions, slot_items, dur))
 
         for bar_num in range(1, total_bars + 1):
             measure_el = ET.SubElement(part_el, "measure", number=str(bar_num))
-            bar_start_time = (bar_num - 1) * seconds_per_bar
-            
+
             # Attributes on bar 1
             if bar_num == 1:
                 attrib = ET.SubElement(measure_el, "attributes")
@@ -349,8 +430,8 @@ def build_musicxml_score(
                     sign.text = "G"
                     line.text = "2"
 
-            bar_notes = data_by_bar[bar_num]
-            if not bar_notes:
+            bar_events = events_by_bar[bar_num]
+            if not bar_events:
                 # Whole measure rest
                 note_el = ET.SubElement(measure_el, "note")
                 ET.SubElement(note_el, "rest")
@@ -358,20 +439,9 @@ def build_musicxml_score(
                 ET.SubElement(note_el, "voice").text = "1"
                 add_type_and_dot(note_el, bar_divisions)
             else:
-                # Group and quantize notes by division slot (0..15)
-                slots = {}
-                for note_obj, string_num, fret_num in bar_notes:
-                    rel_start = max(0.0, note_obj.start - bar_start_time)
-                    slot = min(15, max(0, int(round(rel_start / seconds_per_div))))
-                    raw_dur = max(1, int(round((note_obj.end - note_obj.start) / seconds_per_div)))
-                    if slot not in slots:
-                        slots[slot] = []
-                    slots[slot].append((note_obj, string_num, fret_num, raw_dur))
-
-                sorted_slots = sorted(slots.keys())
                 cursor = 0
 
-                for i, slot in enumerate(sorted_slots):
+                for i, (slot, slot_items, raw_slot_dur) in enumerate(bar_events):
                     # Fill rest gap before this note slot using standard rest durations
                     if slot > cursor:
                         gap_dur = slot - cursor
@@ -384,14 +454,11 @@ def build_musicxml_score(
                         cursor = slot
 
                     # Determine note duration strictly bounded by next slot or end of bar
-                    next_slot = sorted_slots[i + 1] if (i + 1 < len(sorted_slots)) else bar_divisions
+                    next_slot = bar_events[i + 1][0] if (i + 1 < len(bar_events)) else bar_divisions
                     max_allowed = max(1, next_slot - slot)
-
-                    slot_items = slots[slot]
-                    raw_slot_dur = max(item[3] for item in slot_items)
                     slot_dur = min(max_allowed, raw_slot_dur)
 
-                    for idx, (n_obj, s_num, f_num, _) in enumerate(slot_items):
+                    for idx, (n_obj, s_num, f_num) in enumerate(slot_items):
                         n_el = ET.SubElement(measure_el, "note")
                         if idx > 0:
                             ET.SubElement(n_el, "chord")

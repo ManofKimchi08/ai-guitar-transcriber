@@ -66,8 +66,9 @@ def split_guitar_track(input_wav_path: str, output_dir: str) -> dict:
         if correlation < 0.90 and energy_side > 0.05 * (energy_mid + 1e-9):
             # Lead is center (Mid) with sub-bass cut, Rhythm is stereo side
             lead_audio = butter_filter(mid, 80.0, sr, btype='high')
-            # Reconstruct stereo rhythm with original spatial feel
-            rhythm_audio = np.stack([side, -side], axis=1)
+            # Keep the side signal mono: a [side, -side] stereo pair cancels to
+            # silence as soon as anything downmixes it (chord recognition does).
+            rhythm_audio = side
         else:
             # Low stereo separation: Hybrid M/S preserving guitar fundamental range
             lead_audio = butter_filter(mid, 80.0, sr, btype='high') + side * 0.3

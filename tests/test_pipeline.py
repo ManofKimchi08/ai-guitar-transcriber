@@ -15,7 +15,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from src.guitar_splitter import split_guitar_track
 from src.drum_transcriber import transcribe_drums
-from src.tab_builder import optimize_tablature, build_musicxml_score, GUITAR_TUNING, BASS_TUNING
+from src.tab_builder import optimize_tablature, build_musicxml_score, assign_chord_strings, quantize_onsets, GUITAR_TUNING, BASS_TUNING
+from src.chord_recognizer import STANDARD_VOICINGS
 
 
 class TestBandTranscriber(unittest.TestCase):
@@ -50,6 +51,10 @@ class TestBandTranscriber(unittest.TestCase):
         rhythm_data, _ = sf.read(res["rhythm"])
         self.assertGreater(len(lead_data), 0)
         self.assertGreater(len(rhythm_data), 0)
+
+        # Chord recognition downmixes to mono; the rhythm stem must survive that.
+        rhythm_mono = rhythm_data if rhythm_data.ndim == 1 else rhythm_data.mean(axis=1)
+        self.assertGreater(np.sqrt(np.mean(rhythm_mono ** 2)), 0.1)
 
     def test_drum_transcriber(self):
         """Test drum transient and onset detection with synthetic kick and snare hits."""
@@ -121,6 +126,83 @@ class TestBandTranscriber(unittest.TestCase):
         tree = ET.parse(xml_out)
         root = tree.getroot()
         self.assertEqual(root.tag, "score-partwise")
+
+    def test_chord_voicings_stay_playable(self):
+        """Every recognizer voicing must come back from MIDI as a playable shape."""
+        for name, voicing in STANDARD_VOICINGS.items():
+            notes = [pretty_midi.Note(velocity=80, pitch=GUITAR_TUNING[s] + f, start=0.0, end=1.0)
+                     for s, f in voicing]
+            shape = [(s, f) for _, s, f in assign_chord_strings(notes, GUITAR_TUNING)]
+
+            self.assertEqual(len(shape), len(voicing), name)
+            self.assertEqual(len({s for s, _ in shape}), len(shape), f"{name}: string collision")
+            self.assertEqual(sorted(GUITAR_TUNING[s] + f for s, f in shape),
+                             sorted(n.pitch for n in notes), name)
+            fretted = [f for _, f in shape if f > 0]
+            if fretted:
+                self.assertLessEqual(max(fretted) - min(fretted), 3, f"{name}: {shape}")
+
+        # Regression: the Cm barre used to come back as x3-13-0-1-3
+        cm = STANDARD_VOICINGS["Cm"]
+        notes = [pretty_midi.Note(velocity=80, pitch=GUITAR_TUNING[s] + f, start=0.0, end=1.0) for s, f in cm]
+        shape = sorted(((s, f) for _, s, f in assign_chord_strings(notes, GUITAR_TUNING)), reverse=True)
+        self.assertEqual(shape, sorted(cm, reverse=True))
+
+    def _build_single_part(self, part, notes, bpm=120.0):
+        pm = pretty_midi.PrettyMIDI()
+        inst = pretty_midi.Instrument(program=0, is_drum=(part == "drums"))
+        inst.notes = notes
+        pm.instruments.append(inst)
+        mid = os.path.join(self.test_dir, f"test_{part}_only.mid")
+        pm.write(mid)
+        xml_out = os.path.join(self.test_dir, f"test_{part}_only.musicxml")
+        paths = {"drums": "", "bass": "", "lead": "", "rhythm": ""}
+        paths[part] = mid
+        build_musicxml_score(
+            drum_midi_path=paths["drums"], bass_midi_path=paths["bass"],
+            lead_midi_path=paths["lead"], rhythm_midi_path=paths["rhythm"],
+            output_xml_path=xml_out, selected_parts=[part], bpm=bpm
+        )
+        return ET.parse(xml_out).getroot()
+
+    def test_fast_run_never_stacks_into_chords(self):
+        """Sequential notes denser than the 16th grid must not become a same-string chord."""
+        run = [pretty_midi.Note(velocity=90, pitch=p, start=i * 0.07, end=i * 0.07 + 0.065)
+               for i, p in enumerate([64, 65, 67, 69, 71, 72, 74, 76])]
+        root = self._build_single_part("lead", run)
+        self.assertEqual(root.findall(".//note/chord"), [])
+
+    def test_measures_are_exactly_full(self):
+        """Every measure must add up to one 4/4 bar (16 divisions), chords counted once."""
+        notes = []
+        for i in range(40):  # strummed chords on uneven timing, some crossing bar lines
+            start = i * 0.37
+            for p in (40, 47, 52):
+                notes.append(pretty_midi.Note(velocity=80, pitch=p, start=start, end=start + 0.9))
+        root = self._build_single_part("rhythm", notes, bpm=97.0)
+        for measure in root.iter("measure"):
+            total = sum(int(n.findtext("duration")) for n in measure.findall("note")
+                        if n.find("chord") is None)
+            self.assertEqual(total, 16, f"measure {measure.get('number')}")
+
+    def test_quantized_chords_hold_one_note_per_string(self):
+        """Even if upstream grouping disagrees, a written chord never reuses a string."""
+        a = pretty_midi.Note(velocity=80, pitch=60, start=0.000, end=0.5)
+        b = pretty_midi.Note(velocity=80, pitch=61, start=0.020, end=0.5)
+        events = quantize_onsets([(a, 2, 1), (b, 2, 2)], seconds_per_div=0.125)
+        for _, items, _ in events:
+            strings = [s for _, s, _ in items]
+            self.assertEqual(len(strings), len(set(strings)))
+
+    def test_drum_hits_on_one_beat_share_a_slot(self):
+        """Kick and hi-hat a few ms apart are one drum event, not two sequential ones."""
+        hits = [pretty_midi.Note(velocity=100, pitch=36, start=0.0, end=0.1),
+                pretty_midi.Note(velocity=100, pitch=42, start=0.04, end=0.1)]
+        root = self._build_single_part("drums", hits)
+        first = root.find("./part/measure[@number='1']")
+        played = [n for n in first.findall("note") if n.find("rest") is None]
+        self.assertEqual(len(played), 2)
+        self.assertIsNotNone(played[1].find("chord"))
 
 
 if __name__ == "__main__":
