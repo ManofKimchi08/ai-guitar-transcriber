@@ -20,7 +20,7 @@ import customtkinter as ctk
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, PROJECT_DIR)
 
-from src.pipeline import run_pipeline, is_url
+from src.pipeline import run_pipeline, is_url, VRAM_PROFILES, vram_profile_for
 from src.fretboard_gui import FretboardEditorDialog
 
 OUTPUT_ROOT = os.path.join(PROJECT_DIR, "output")
@@ -41,11 +41,14 @@ class BandTranscriberApp(ctk.CTk):
         # Check GPU
         self.gpu_name = "CPU Only"
         self.has_cuda = False
+        self.default_vram = "8gb"
         try:
             import torch
             if torch.cuda.is_available():
                 self.has_cuda = True
-                self.gpu_name = f"NVIDIA {torch.cuda.get_device_name(0)} (CUDA 가속 활성)"
+                vram_gb = torch.cuda.get_device_properties(0).total_memory / 1024 ** 3
+                self.default_vram = vram_profile_for(vram_gb)
+                self.gpu_name = f"NVIDIA {torch.cuda.get_device_name(0)} · VRAM {vram_gb:.1f}GB (CUDA 가속 활성)"
         except Exception:
             pass
 
@@ -214,6 +217,16 @@ class BandTranscriberApp(ctk.CTk):
         self.seg_style.set("🎸 타브 악보만 (TAB)")
         self.seg_style.pack(fill="x", padx=15, pady=(0, 10))
 
+        lbl_vram = ctk.CTkLabel(opt_frame, text="GPU 메모리 (VRAM):", font=ctk.CTkFont(weight="bold"))
+        lbl_vram.pack(anchor="w", padx=15, pady=(2, 4))
+
+        self.seg_vram = ctk.CTkSegmentedButton(
+            opt_frame,
+            values=[profile["label"] for profile in VRAM_PROFILES.values()]
+        )
+        self.seg_vram.set(VRAM_PROFILES[self.default_vram]["label"])
+        self.seg_vram.pack(fill="x", padx=15, pady=(0, 10))
+
         # 4. Action & Progress Frame
         action_frame = ctk.CTkFrame(scroll_body, corner_radius=10)
         action_frame.pack(fill="x", padx=10, pady=5)
@@ -284,6 +297,11 @@ class BandTranscriberApp(ctk.CTk):
             return "standard"
         return "tab"
 
+    def _selected_vram(self) -> str:
+        chosen = self.seg_vram.get()
+        return next((key for key, profile in VRAM_PROFILES.items() if profile["label"] == chosen),
+                    self.default_vram)
+
     def _start_pipeline_thread(self):
         if self.is_running:
             return
@@ -308,17 +326,19 @@ class BandTranscriberApp(ctk.CTk):
         # Read widget state here, on the UI thread; the worker only gets plain values.
         parts = self._selected_parts()
         style = self._selected_style()
+        vram = self._selected_vram()
 
-        thread = threading.Thread(target=self._run_pipeline, args=(input_audio, output_dir, parts, style), daemon=True)
+        thread = threading.Thread(target=self._run_pipeline, args=(input_audio, output_dir, parts, style, vram),
+                                  daemon=True)
         thread.start()
         self.after(100, self._drain_ui_queue)
 
-    def _run_pipeline(self, input_audio: str, output_dir: str, parts: list, style: str):
+    def _run_pipeline(self, input_audio: str, output_dir: str, parts: list, style: str, vram: str):
         """Worker thread: never touches Tk widgets, only posts messages to the UI queue."""
         post = self._ui_queue.put
         try:
             result = run_pipeline(
-                input_audio, output_dir, parts=parts, style=style,
+                input_audio, output_dir, parts=parts, style=style, vram=vram,
                 log=lambda text: post(("log", text)),
                 progress=lambda text, fraction: post(("status", text, fraction))
             )

@@ -20,6 +20,30 @@ from src.pdf_exporter import export_score_to_pdf
 
 ALL_PARTS = ['drums', 'bass', 'rhythm', 'lead']
 
+# GPU memory profiles. Peak activations measured per setting: htdemucs ~0.7 GB at
+# its default 7.8 s segment (~0.5 GB at 5 s); TorchCREPE 'full' ~2.5 GB per 1024
+# frames. Both steps also retry with smaller settings if the GPU still runs out.
+VRAM_PROFILES = {
+    "8gb": {"label": "8GB 이상 (표준)", "demucs_segment": None, "crepe_batch_size": 1024},
+    "4gb": {"label": "4GB (저사양)", "demucs_segment": 5, "crepe_batch_size": 512},
+}
+
+
+def vram_profile_for(total_gb: float) -> str:
+    """Maps a GPU's total memory to a VRAM profile ("8 GB" cards report slightly under 8 GiB)."""
+    return "8gb" if total_gb >= 7.0 else "4gb"
+
+
+def detect_vram_profile() -> str:
+    """Picks the VRAM profile for the first CUDA GPU; '8gb' when running on CPU."""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return vram_profile_for(torch.cuda.get_device_properties(0).total_memory / 1024 ** 3)
+    except Exception:
+        pass
+    return "8gb"
+
 
 def is_url(text: str) -> bool:
     return text.startswith("http://") or text.startswith("https://")
@@ -48,6 +72,7 @@ def run_pipeline(
     parts: list = None,
     style: str = "tab",
     skip_separation: bool = False,
+    vram: str = None,
     log=print,
     progress=None
 ) -> dict:
@@ -60,6 +85,7 @@ def run_pipeline(
         parts: Subset of ALL_PARTS to transcribe (default: all).
         style: PDF style 'tab', 'standard' or 'both'.
         skip_separation: Reuse this song's existing stems instead of re-running Demucs.
+        vram: Key of VRAM_PROFILES ('8gb' or '4gb'); None detects it from the GPU.
         log: Called with each log line.
         progress: Called as progress(status_text, fraction) at each stage.
 
@@ -99,8 +125,11 @@ def run_pipeline(
     for d in (stems_dir, midi_dir, score_dir):
         os.makedirs(d, exist_ok=True)
 
+    vram_profile = VRAM_PROFILES[vram or detect_vram_profile()]
+
     log(f"[*] 출력 폴더: {song_dir}")
     log(f"[*] 선택된 파트: {', '.join(selected_parts)}")
+    log(f"[*] GPU 메모리 모드: {vram_profile['label']}")
 
     # -------------------------------------------------------------
     # Step 1: Stem Separation (Demucs)
@@ -114,7 +143,8 @@ def run_pipeline(
     else:
         progress("1/4 단계: Meta Demucs 6-Stem 음원 분리 중 (GPU)...", 0.15)
         log("\n--- [Step 1] AI 음원 분리 (Demucs htdemucs_6s) ---")
-        stems = separate_stems(input_path, song_dir, model_name="htdemucs_6s")
+        stems = separate_stems(input_path, song_dir, model_name="htdemucs_6s",
+                               segment=vram_profile["demucs_segment"])
         drums_wav = stems.get("drums", drums_wav)
         bass_wav = stems.get("bass", bass_wav)
         guitar_wav = stems.get("guitar", guitar_wav)
@@ -141,15 +171,16 @@ def run_pipeline(
     progress("3/4 단계: 각 악기별 고정밀 MIDI 변환 중 (TorchCREPE & CQT Chords)...", 0.65)
     log("\n--- [Step 3] 고정밀 MIDI 전사 (TorchCREPE GPU & CQT Chords) ---")
 
+    crepe_batch = vram_profile["crepe_batch_size"]
     jobs = [
         ("drums", drums_wav, "drums.mid", "드럼 트랙 분석 중 (Kick, Snare, Hi-Hat 적응형 온셋)...",
          lambda wav, mid: transcribe_drums(wav, mid)),
         ("bass", bass_wav, "bass.mid", "베이스 기타 심층 F0 추적 중 (TorchCREPE GPU 360-bin)...",
-         lambda wav, mid: transcribe_pitch(wav, mid, instrument_name="bass")),
+         lambda wav, mid: transcribe_pitch(wav, mid, instrument_name="bass", crepe_batch_size=crepe_batch)),
         ("lead", lead_wav, "lead_guitar.mid", "리드 기타 솔로 멜로디 추적 중 (TorchCREPE GPU)...",
-         lambda wav, mid: transcribe_pitch(wav, mid, instrument_name="guitar_lead")),
+         lambda wav, mid: transcribe_pitch(wav, mid, instrument_name="guitar_lead", crepe_batch_size=crepe_batch)),
         ("rhythm", rhythm_wav, "rhythm_guitar.mid", "리듬 기타 다성 화음 분석 중 (CQT 크로마 & 6줄 타브 폼)...",
-         lambda wav, mid: transcribe_pitch(wav, mid, instrument_name="guitar_rhythm")),
+         lambda wav, mid: transcribe_pitch(wav, mid, instrument_name="guitar_rhythm", crepe_batch_size=crepe_batch)),
     ]
 
     # Only MIDIs written in this run go into the score, never leftovers on disk.

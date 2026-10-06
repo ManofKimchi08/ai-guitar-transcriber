@@ -12,21 +12,28 @@ import subprocess
 import torch
 
 
+# Demucs's documented low-memory settings, used when the GPU runs out of memory
+LOW_MEMORY_SEGMENT = 3
+
+
 def separate_stems(
     audio_path: str,
     output_dir: str,
     model_name: str = "htdemucs_6s",
-    device: str = None
+    device: str = None,
+    segment: int = None
 ) -> dict:
     """
     Separates an audio file into stems using Demucs.
-    
+
     Args:
         audio_path: Path to input audio file (MP3, WAV, FLAC, etc.)
         output_dir: Directory where separated stems will be stored.
         model_name: 'htdemucs_6s' (6 stems including guitar) or 'htdemucs' (4 stems)
         device: 'cuda' or 'cpu' (defaults to cuda if available)
-        
+        segment: Seconds of audio processed on the GPU at once (lower = less VRAM,
+            at most 7 for Hybrid Transformer models). None keeps Demucs's default.
+
     Returns:
         dict: Mapping of stem names to file paths.
     """
@@ -41,16 +48,28 @@ def separate_stems(
     
     # Run Demucs via Python module execution in current virtual environment
     python_exe = sys.executable
-    cmd = [
-        python_exe, "-m", "demucs.separate",
-        "-n", model_name,
-        "-d", device,
-        "-o", output_dir,
-        abs_audio
-    ]
-    
+
+    def run_demucs(seg, env=None):
+        cmd = [
+            python_exe, "-m", "demucs.separate",
+            "-n", model_name,
+            "-d", device,
+            "-o", output_dir,
+        ]
+        if seg:
+            cmd += ["--segment", str(seg)]
+        cmd.append(abs_audio)
+        return subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                              text=True, env=env)
+
     try:
-        proc = subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        try:
+            proc = run_demucs(segment)
+        except subprocess.CalledProcessError as e:
+            if device != "cuda" or "out of memory" not in (e.stdout or "").lower():
+                raise
+            print(f"[!] GPU memory exhausted; retrying Demucs in low-memory mode (segment {LOW_MEMORY_SEGMENT}s)...")
+            proc = run_demucs(LOW_MEMORY_SEGMENT, env=dict(os.environ, PYTORCH_NO_CUDA_MEMORY_CACHING="1"))
         print(proc.stdout)
     except subprocess.CalledProcessError as e:
         print(f"[-] Demucs execution failed with code {e.returncode}:")

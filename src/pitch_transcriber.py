@@ -19,17 +19,19 @@ def transcribe_pitch(
     onset_threshold: float = 0.5,
     frame_threshold: float = 0.3,
     minimum_note_length: float = 58.0,
-    include_pitch_bends: bool = True
+    include_pitch_bends: bool = True,
+    crepe_batch_size: int = 1024
 ) -> str:
     """
     Transcribes monophonic or polyphonic audio to MIDI using TorchCREPE or CQT Chords.
-    
+
     Args:
         audio_path: Path to the input WAV audio.
         output_midi_path: Path where the resulting .mid will be saved.
         instrument_name: 'bass', 'guitar_lead', or 'guitar_rhythm'.
         engine: 'crepe' (SOTA high-precision) or 'basic_pitch'.
-        
+        crepe_batch_size: TorchCREPE frames per GPU batch (lower = less VRAM, same accuracy).
+
     Returns:
         Path to output_midi_path
     """
@@ -46,7 +48,8 @@ def transcribe_pitch(
     # 2. Bass and Lead Guitar use TorchCREPE GPU tracking when engine == 'crepe'
     if engine == "crepe":
         try:
-            return transcribe_with_crepe(audio_path, output_midi_path, instrument_name=instrument_name)
+            return transcribe_with_crepe(audio_path, output_midi_path, instrument_name=instrument_name,
+                                         batch_size=crepe_batch_size)
         except Exception as e:
             print(f"[!] TorchCREPE failed ({e}), falling back to basic pitch.")
 
@@ -67,10 +70,13 @@ def transcribe_with_crepe(
     output_midi_path: str,
     instrument_name: str = "bass",
     model: str = "full",
-    device: str = None
+    device: str = None,
+    batch_size: int = 1024
 ) -> str:
     """
     High-accuracy monophonic pitch tracking using TorchCREPE (CUDA accelerated).
+    VRAM use grows with batch_size: the 'full' model needs about 2.5 GB of
+    activations per 1024 frames.
     """
     import torch
     import torchcrepe
@@ -92,17 +98,27 @@ def transcribe_with_crepe(
     conf_thresh = 0.25 if instrument_name == "bass" else 0.35
 
     x = torch.from_numpy(y_norm).unsqueeze(0).float().to(device)
-    pitch, periodicity = torchcrepe.predict(
-        x,
-        sample_rate=16000,
-        hop_length=hop_length,
-        fmin=fmin,
-        fmax=fmax,
-        model=model,
-        batch_size=2048,
-        device=device,
-        return_periodicity=True
-    )
+
+    def predict(batch):
+        return torchcrepe.predict(
+            x,
+            sample_rate=16000,
+            hop_length=hop_length,
+            fmin=fmin,
+            fmax=fmax,
+            model=model,
+            batch_size=batch,
+            device=device,
+            return_periodicity=True
+        )
+
+    try:
+        pitch, periodicity = predict(batch_size)
+    except torch.cuda.OutOfMemoryError:
+        # Smaller batches give identical results, just more slowly
+        torch.cuda.empty_cache()
+        print(f"[!] GPU memory exhausted; retrying TorchCREPE with batch size {max(64, batch_size // 4)}...")
+        pitch, periodicity = predict(max(64, batch_size // 4))
     p = pitch.squeeze(0).cpu().numpy()
     conf = periodicity.squeeze(0).cpu().numpy()
 

@@ -10,7 +10,7 @@ import argparse
 # Add src to python path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from src.pipeline import run_pipeline
+from src.pipeline import run_pipeline, VRAM_PROFILES
 
 
 def main():
@@ -20,12 +20,14 @@ def main():
     parser.add_argument("--skip-separation", action="store_true", help="Reuse this song's existing stems instead of re-running Demucs")
     parser.add_argument("--parts", default="drums,bass,rhythm,lead", help="Comma-separated parts to include (e.g. 'lead,bass' or 'rhythm')")
     parser.add_argument("--style", default="tab", choices=["tab", "standard", "both"], help="PDF style: tab, standard, both")
+    parser.add_argument("--vram", choices=sorted(VRAM_PROFILES), default=None,
+                        help="GPU memory profile: 8gb or 4gb (default: detected from the GPU)")
     args = parser.parse_args()
 
     selected_parts = [p.strip() for p in args.parts.split(",") if p.strip()]
     try:
         run_pipeline(args.input, args.output, parts=selected_parts, style=args.style,
-                     skip_separation=args.skip_separation)
+                     skip_separation=args.skip_separation, vram=args.vram)
     except FileNotFoundError as e:
         print(f"[!] Error: {e}")
         sys.exit(1)
