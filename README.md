@@ -88,7 +88,7 @@ An end-to-end AI music transcription suite that isolates band instruments (Drums
 
 #### 2. 🎸 리듬 기타 7th 코드 보이싱 전체 확장 (48개 템플릿 100% 매핑)
 - 기존 누락되어 있던 **C#7, D#7, F#7, G#7, A#7** 등 도미넌트 7th 코드 보이싱 템플릿을 전격 추가.
-- 이제 12개 모든 반음계의 메이저(Major), 마이너(Minor), 세븐스(7th), 마이너세븐스(m7) 총 48개 코드 템플릿이 6현 타브 지판에 빠짐없이 정확한 운지로 자동 채보됩니다.
+- 이제 12개 모든 반음계의 메이저(Major), 마이너(Minor), 세븐스(7th), 파워코드(5) 총 48개 코드 템플릿이 6현 타브 지판에 빠짐없이 정확한 운지로 자동 채보됩니다.
 
 #### 3. 🎼 MusicXML 4/4 박자 마디 누적 오버플로우 차단 및 음표 `<type>` 표준 태그 도입
 - **마디 박자 정밀 퀀타이즈**: 마디당 16디비전(4/4박)을 초과하지 않도록 음표 길이를 다음 슬롯까지로 엄격히 바운딩(`slot_dur = min(max_allowed, raw_dur)`).
@@ -276,6 +276,7 @@ ai_band_transcriber/
 ├── start.bat                  # 최초 1회 전자동 설치 & 실행 스크립트
 ├── run_gui.bat                # 가상환경 배치 실행 스크립트
 ├── Launcher.cs                # 런처 C# 소스 코드
+├── build_launcher.bat         # Launcher.cs → AI_Band_Transcriber.exe 재빌드 (Windows 기본 C# 컴파일러 사용)
 ├── app_gui.py                 # CustomTkinter 반응형 다크모드 메인 GUI
 ├── main.py                    # CLI 진입점 (src/pipeline.py 호출)
 ├── requirements.txt           # Python 필수 라이브러리 목록

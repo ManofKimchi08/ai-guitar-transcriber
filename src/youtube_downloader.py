@@ -40,6 +40,9 @@ def download_youtube_audio(url: str, output_dir: str, progress_hook=None) -> tup
         'no_warnings': True,
         # A watch?v=...&list=... link must fetch that one video, not the whole playlist
         'noplaylist': True,
+        # Give up on a stalled connection instead of hanging the app
+        'socket_timeout': 30,
+        'retries': 3,
     }
 
     if progress_hook:

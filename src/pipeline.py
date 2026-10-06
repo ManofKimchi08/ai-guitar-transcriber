@@ -253,8 +253,9 @@ def run_pipeline(
     else:
         progress("1/4 단계: Meta Demucs 6-Stem 음원 분리 중 (GPU)...", 0.15)
         log("\n--- [Step 1] AI 음원 분리 (Demucs htdemucs_6s) ---")
-        stems = separate_stems(input_path, song_dir, model_name="htdemucs_6s",
-                               segment=vram_profile["demucs_segment"])
+        stems = separate_stems(
+            input_path, song_dir, model_name="htdemucs_6s", segment=vram_profile["demucs_segment"], log=log,
+            progress=lambda f: progress(f"1/4 단계: Meta Demucs 6-Stem 음원 분리 중... {f:.0%}", 0.15 + 0.25 * f))
         drums_wav = stems.get("drums", drums_wav)
         bass_wav = stems.get("bass", bass_wav)
         guitar_wav = stems.get("guitar", guitar_wav)

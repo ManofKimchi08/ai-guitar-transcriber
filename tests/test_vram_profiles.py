@@ -52,9 +52,9 @@ class TestVramProfiles(unittest.TestCase):
             calls.append((cmd, env))
             if len(calls) == 1:
                 raise subprocess.CalledProcessError(1, cmd, output="torch.OutOfMemoryError: CUDA out of memory.")
-            return subprocess.CompletedProcess(cmd, 0, stdout="")
+            return ""
 
-        with mock.patch.object(separator.subprocess, "run", side_effect=fake_run):
+        with mock.patch.object(separator, "run_streaming", side_effect=fake_run):
             stems = separator.separate_stems(os.path.join(out_dir, "song.wav"), out_dir,
                                              device="cuda", segment=5)
 
@@ -75,12 +75,33 @@ class TestVramProfiles(unittest.TestCase):
             calls.append(cmd)
             raise subprocess.CalledProcessError(1, cmd, output="Some other failure")
 
-        with mock.patch.object(separator.subprocess, "run", side_effect=failing_run):
+        with mock.patch.object(separator, "run_streaming", side_effect=failing_run):
             with self.assertRaises(RuntimeError):
                 separator.separate_stems(os.path.join(out_dir, "song.wav"), out_dir, device="cuda")
 
         self.assertEqual(len(calls), 1)  # only GPU OOM is retried
         self.assertNotIn("--segment", calls[0])  # None keeps Demucs's own default
+
+    def test_streaming_runner_relays_progress_and_stops_hung_processes(self):
+        child = (
+            "import sys, time\n"
+            "print('Separating track song.wav', flush=True)\n"
+            "for p in range(0, 101, 5):\n"
+            "    sys.stderr.write(f'\\r {p}%|####| {p}/100 [00:01<00:00]'); sys.stderr.flush(); time.sleep(0.01)\n"
+            "sys.stderr.write('\\n')\n"
+        )
+        logs, fractions = [], []
+        output = separator.run_streaming([sys.executable, "-c", child], log=logs.append, progress=fractions.append)
+        self.assertIn("Separating track song.wav", output)
+        self.assertEqual(fractions[0], 0.0)
+        self.assertEqual(fractions[-1], 1.0)
+        self.assertEqual(sum("진행률" in line for line in logs), 11)  # every 10%, not every update
+        self.assertIn("   Separating track song.wav", logs)
+
+        hung = [sys.executable, "-c", "import time; print('started', flush=True); time.sleep(30)"]
+        with self.assertRaises(subprocess.CalledProcessError) as ctx:
+            separator.run_streaming(hung, log=lambda m: None, idle_timeout=2)
+        self.assertIn("stopped", ctx.exception.output)
 
     def test_crepe_batch_size_and_oom_retry(self):
         sr = 16000

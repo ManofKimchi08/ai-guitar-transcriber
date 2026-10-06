@@ -53,6 +53,10 @@ def find_lilypond():
     return None, None, None
 
 
+# A hung converter must not freeze the app (a long full-band score takes ~1 minute)
+MUSICXML2LY_TIMEOUT_SEC = 120
+LILYPOND_TIMEOUT_SEC = 600
+
 # Percussion clef glyph with treble-clef note positions (MusicXML drum display positions)
 PERCUSSION_CLEF = (
     '\\set Staff.clefGlyph = #"clefs.percussion" \\set Staff.clefPosition = #0 '
@@ -253,7 +257,8 @@ def export_score_to_pdf(musicxml_path: str, output_pdf_path: str = None, style: 
                 [py_bin, m2l_py, "-o", ly_path, xml_abs],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                check=True
+                check=True,
+                timeout=MUSICXML2LY_TIMEOUT_SEC
             )
             
             # Step 2: Apply authentic TAB transformation & sanitize invalid articulations
@@ -270,7 +275,8 @@ def export_score_to_pdf(musicxml_path: str, output_pdf_path: str = None, style: 
                 [lp_bin, "--pdf", "-o", base_out, ly_path],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                cwd=os.path.dirname(pdf_abs)
+                cwd=os.path.dirname(pdf_abs),
+                timeout=LILYPOND_TIMEOUT_SEC
             )
             
             if proc.returncode != 0:
@@ -279,6 +285,8 @@ def export_score_to_pdf(musicxml_path: str, output_pdf_path: str = None, style: 
 
             if os.path.exists(pdf_abs):
                 return pdf_abs
+        except subprocess.TimeoutExpired as e:
+            print(f"[-] LilyPond step did not finish within {e.timeout:.0f}s; stopped: {e.cmd[0]}")
         except subprocess.CalledProcessError as e:
             err_msg = e.stderr.decode('utf-8', errors='ignore') if e.stderr else str(e)
             print(f"[-] LilyPond tool failed (exit code {e.returncode}):\n{err_msg}")

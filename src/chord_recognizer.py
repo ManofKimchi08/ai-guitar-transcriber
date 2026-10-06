@@ -1,7 +1,7 @@
 """
 Guitar Chord Recognizer Module
 Analyzes audio using Constant-Q Transform (CQT) Chroma analysis,
-matches against 24 Major/Minor and Power Chord profiles,
+matches against 48 major / minor / dominant-7th / power-chord profiles,
 and maps detected chords into authentic 6-string guitar chord fingerings.
 """
 
