@@ -142,7 +142,7 @@ class ScoreFretEditor:
         Extracts all playable notes in a measure with their current string, fret, and pitch.
         """
         part = next((p for p in self.parts if p["id"] == part_id), None)
-        if not part or not part["part_element"]:
+        if not part or part["part_element"] is None:
             return []
 
         measure_el = part["part_element"].find(f"./measure[@number='{measure_number}']")
@@ -155,6 +155,10 @@ class ScoreFretEditor:
         for note_el in measure_el.findall("note"):
             is_rest = (note_el.find("rest") is not None)
             if is_rest:
+                continue
+
+            # A tied continuation belongs to the note it is tied from; it is not a new attack
+            if note_el.find("tie[@type='stop']") is not None:
                 continue
 
             pitch_el = note_el.find("pitch")
@@ -219,14 +223,44 @@ class ScoreFretEditor:
         new_fret: int
     ) -> bool:
         """
-        Updates the <technical><string> and <technical><fret> elements in MusicXML for the target note.
+        Updates the <technical><string> and <technical><fret> elements in MusicXML for the
+        target note and every note tied onto it (a tie keeps one string/fret).
         """
         measure_notes = self.get_measure_notes(part_id, measure_number)
         if not (0 <= note_index < len(measure_notes)):
             return False
 
         target_note_el = measure_notes[note_index]["note_element"]
+        for note_el in [target_note_el] + self._tied_continuations(part_id, target_note_el):
+            self._set_string_fret(note_el, new_string, new_fret)
+        return True
 
+    @staticmethod
+    def _pitch_key(note_el: ET.Element):
+        pitch_el = note_el.find("pitch")
+        if pitch_el is None:
+            return None
+        return pitch_el.findtext("step"), pitch_el.findtext("alter", "0"), pitch_el.findtext("octave")
+
+    def _tied_continuations(self, part_id: str, note_el: ET.Element) -> List[ET.Element]:
+        """Notes tied onto `note_el`, following the tie chain across bar lines."""
+        part = next((p for p in self.parts if p["id"] == part_id), None)
+        notes = list(part["part_element"].iter("note"))
+        key = self._pitch_key(note_el)
+        chain = []
+        current, i = note_el, notes.index(note_el)
+        while current.find("tie[@type='start']") is not None:
+            nxt = next((j for j in range(i + 1, len(notes))
+                        if notes[j].find("tie[@type='stop']") is not None and self._pitch_key(notes[j]) == key),
+                       None)
+            if nxt is None:
+                break
+            current, i = notes[nxt], nxt
+            chain.append(current)
+        return chain
+
+    @staticmethod
+    def _set_string_fret(target_note_el: ET.Element, new_string: int, new_fret: int):
         # Ensure <notations> exists
         notations_el = target_note_el.find("notations")
         if notations_el is None:
@@ -248,8 +282,6 @@ class ScoreFretEditor:
         if fret_el is None:
             fret_el = ET.SubElement(tech_el, "fret")
         fret_el.text = str(new_fret)
-
-        return True
 
     def save_xml(self, output_path: Optional[str] = None) -> str:
         """Saves changes back to MusicXML."""

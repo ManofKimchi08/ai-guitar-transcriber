@@ -134,11 +134,23 @@ def transcribe_with_crepe(
     midi_p = np.zeros(min_len)
     midi_p[voiced] = librosa.hz_to_midi(p[voiced])
 
-    # Median smoothing on contiguous voiced frames
-    if np.sum(voiced) > 5:
-        v_idx = np.where(voiced)[0]
-        smoothed_v = medfilt(midi_p[v_idx], kernel_size=5)
-        midi_p[v_idx] = smoothed_v
+    # Median-smooth each contiguous voiced run on its own, so pitches of separate
+    # notes are never blended across a silence
+    run_start = None
+    for i in range(min_len + 1):
+        if i < min_len and voiced[i]:
+            if run_start is None:
+                run_start = i
+        elif run_start is not None:
+            if i - run_start >= 5:
+                midi_p[run_start:i] = medfilt(midi_p[run_start:i], kernel_size=5)
+            run_start = None
+
+    # Re-struck notes: an onset with a real rise in energy starts a new note even at
+    # the same pitch (vibrato and bends move the spectrum without adding energy)
+    onset_frames = librosa.onset.onset_detect(y=y_norm, sr=16000, hop_length=hop_length, units="frames")
+    attacks = {int(f) for f in onset_frames
+               if 0 < f < min_len and rms[f] >= 1.2 * rms[max(0, f - 3):f].min()}
 
     notes = []
     curr_pitch = None
@@ -176,7 +188,8 @@ def transcribe_with_crepe(
                 accum_rms = [rms[i]]
                 accum_pitches = [val]
             else:
-                if abs(val - curr_pitch) >= 0.8:
+                re_struck = i in attacks and t - note_start >= min_dur
+                if abs(val - curr_pitch) >= 0.8 or re_struck:
                     emit_note(note_start, t, accum_pitches, accum_rms)
                     curr_pitch = val
                     note_start = t

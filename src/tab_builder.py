@@ -326,9 +326,10 @@ def optimize_tablature(notes: list, tuning: dict, max_fret: int = 22) -> list:
 
 
 def quantize_onsets(items: list, seconds_per_div: float, merge_same_slot: bool = False,
-                    onset_tol: float = 0.035) -> list:
+                    onset_tol: float = 0.035, origin: float = 0.0) -> list:
     """
-    Snaps (note, string, fret) items onto a global grid of `seconds_per_div` slots.
+    Snaps (note, string, fret) items onto a global grid of `seconds_per_div` slots
+    starting at time `origin` (slot 0, the first beat of bar 1).
     Returns [(slot, [items...], dur_in_divs), ...] with strictly increasing slots.
 
     Notes struck together (within onset_tol) share a slot as one chord. For pitched
@@ -354,8 +355,8 @@ def quantize_onsets(items: list, seconds_per_div: float, merge_same_slot: bool =
                     used_strings.add(it[1])
                     kept.append(it)
             group = kept
-        pos = group[0][0].start / seconds_per_div
-        slot = int(round(pos))
+        pos = (group[0][0].start - origin) / seconds_per_div
+        slot = max(0, int(round(pos)))
         dur = max(1, int(round(max(n.end - n.start for n, _, _ in group) / seconds_per_div)))
         if events and slot <= events[-1][0]:
             last_slot, last_items, last_dur = events[-1]
@@ -371,6 +372,40 @@ def quantize_onsets(items: list, seconds_per_div: float, merge_same_slot: bool =
     return events
 
 
+def split_into_bars(events: list, bar_divisions: int = 16, tie: bool = True) -> tuple:
+    """
+    Lays quantized events out bar by bar. Each event lasts until its own end or the
+    next event, whichever comes first. A note that crosses a bar line, or lasts a
+    value with no single note symbol (e.g. 5 sixteenths), becomes tied standard
+    values; without `tie` (drum hits) only the first value is kept.
+
+    Returns ({bar_number: [(slot_in_bar, items, dur, tie_stop, tie_start), ...]},
+    end_slot) where end_slot is where the last sounding value ends.
+    """
+    by_bar = {}
+    end_slot = 0
+    for i, (slot, items, dur) in enumerate(events):
+        end = slot + dur
+        if i + 1 < len(events):
+            end = min(end, events[i + 1][0])
+
+        pieces = []
+        pos = slot
+        while pos < end:
+            bar_end = (pos // bar_divisions + 1) * bar_divisions
+            for d in decompose_duration(min(end, bar_end) - pos):
+                pieces.append((pos, d))
+                pos += d
+        if not tie:
+            pieces = pieces[:1]
+
+        for k, (p, d) in enumerate(pieces):
+            by_bar.setdefault(p // bar_divisions + 1, []).append(
+                (p % bar_divisions, items, d, k > 0, k < len(pieces) - 1))
+        end_slot = max(end_slot, pieces[-1][0] + pieces[-1][1])
+    return by_bar, end_slot
+
+
 def _append_rests(measure_el: ET.Element, dur: int):
     """Appends rests filling `dur` divisions, split into standard note values."""
     for chunk in decompose_duration(dur):
@@ -382,8 +417,9 @@ def _append_rests(measure_el: ET.Element, dur: int):
 
 
 def _append_note(measure_el: ET.Element, note, string_num, fret_num, dur: int, chord: bool,
-                 fifths: int = 0, drum_part_id: str = None):
-    """Appends one pitched (or, for drum parts, unpitched) note with optional string/fret."""
+                 fifths: int = 0, drum_part_id: str = None,
+                 tie_stop: bool = False, tie_start: bool = False):
+    """Appends one pitched (or, for drum parts, unpitched) note with optional string/fret and ties."""
     n_el = ET.SubElement(measure_el, "note")
     if chord:
         ET.SubElement(n_el, "chord")
@@ -403,6 +439,10 @@ def _append_note(measure_el: ET.Element, note, string_num, fret_num, dur: int, c
         ET.SubElement(pitch_el, "octave").text = str(octave)
 
     ET.SubElement(n_el, "duration").text = str(dur)
+    if tie_stop:
+        ET.SubElement(n_el, "tie", type="stop")
+    if tie_start:
+        ET.SubElement(n_el, "tie", type="start")
     if drum_part_id:
         ET.SubElement(n_el, "instrument", id=f"{drum_part_id}-I{note.pitch}")
     ET.SubElement(n_el, "voice").text = "1"
@@ -410,9 +450,15 @@ def _append_note(measure_el: ET.Element, note, string_num, fret_num, dur: int, c
     if notehead:
         ET.SubElement(n_el, "notehead").text = notehead
 
-    # Tablature notation for string & fret
-    if string_num is not None and fret_num is not None:
+    has_tab = string_num is not None and fret_num is not None
+    if tie_stop or tie_start or has_tab:
         notations = ET.SubElement(n_el, "notations")
+        if tie_stop:
+            ET.SubElement(notations, "tied", type="stop")
+        if tie_start:
+            ET.SubElement(notations, "tied", type="start")
+    # Tablature notation for string & fret
+    if has_tab:
         tech = ET.SubElement(notations, "technical")
         ET.SubElement(tech, "string").text = str(string_num)
         ET.SubElement(tech, "fret").text = str(fret_num)
@@ -498,11 +544,13 @@ def build_musicxml_score(
     output_xml_path: str,
     song_title: str = "AI Band Transcription",
     selected_parts: list = None,
-    bpm: float = 120.0
+    bpm: float = 120.0,
+    downbeat: float = 0.0
 ) -> str:
     """
     Combines transcribed MIDIs into a clean, multi-part or single-part MusicXML score
-    with Tablature, Notation, accurate measure-beat quantization, rests, and chords.
+    with Tablature, Notation, accurate measure-beat quantization, rests, ties and chords.
+    `downbeat` is the time (s) of any downbeat; bar lines are aligned to it.
     """
     os.makedirs(os.path.dirname(output_xml_path) or '.', exist_ok=True)
     
@@ -562,25 +610,26 @@ def build_musicxml_score(
     bar_divisions = 16
     seconds_per_div = seconds_per_beat / divisions
     
-    # Snap every part onto one global 16th-note grid, then split it into bars
-    part_events = []
-    last_slot = int(round(2.0 / seconds_per_div))  # at least ~2 s of score
+    # Snap every part onto one global 16th-note grid whose bar lines fall on the
+    # downbeats: bar 1 starts at the last downbeat before the music (minus a little
+    # slack), so anything earlier is written as a pickup with leading rests.
+    bar_seconds = seconds_per_div * bar_divisions
+    origin = downbeat - bar_seconds * np.ceil((downbeat - seconds_per_div / 2) / bar_seconds)
+
+    part_segments = []
+    last_slot = int(round((2.0 - origin) / seconds_per_div))  # at least ~2 s of score
     for part_key, pid, pname, pabbr, data, ptype in parts_info:
         items = [(n, None, None) for n in data] if ptype == "drum" else data
-        events = quantize_onsets(items, seconds_per_div, merge_same_slot=(ptype == "drum"))
-        for slot, _, dur in events:
-            last_slot = max(last_slot, slot + dur)
-        part_events.append(events)
+        events = quantize_onsets(items, seconds_per_div, merge_same_slot=(ptype == "drum"), origin=origin)
+        segments, end_slot = split_into_bars(events, bar_divisions, tie=(ptype != "drum"))
+        last_slot = max(last_slot, end_slot)
+        part_segments.append(segments)
 
-    total_bars = int(np.ceil(last_slot / bar_divisions)) + 1
+    total_bars = max(1, int(np.ceil(last_slot / bar_divisions)))
 
-    for part_idx, ((part_key, pid, pname, pabbr, data, ptype), events) in enumerate(zip(parts_info, part_events)):
+    for part_idx, ((part_key, pid, pname, pabbr, data, ptype), segments) in enumerate(zip(parts_info, part_segments)):
         part_el = ET.SubElement(score, "part", id=pid)
         drum_part_id = pid if ptype == "drum" else None
-
-        events_by_bar = [[] for _ in range(total_bars + 1)]
-        for slot, slot_items, dur in events:
-            events_by_bar[slot // bar_divisions + 1].append((slot % bar_divisions, slot_items, dur))
 
         for bar_num in range(1, total_bars + 1):
             measure_el = ET.SubElement(part_el, "measure", number=str(bar_num))
@@ -590,31 +639,18 @@ def build_musicxml_score(
                 if part_idx == 0:
                     _add_tempo(measure_el, bpm)
 
-            bar_events = events_by_bar[bar_num]
-            if not bar_events:
-                # Whole measure rest
-                _append_rests(measure_el, bar_divisions)
-                continue
-
             cursor = 0
-            for i, (slot, slot_items, raw_slot_dur) in enumerate(bar_events):
+            for slot, slot_items, dur, tie_stop, tie_start in segments.get(bar_num, []):
                 # Fill rest gap before this note slot using standard rest durations
                 if slot > cursor:
                     _append_rests(measure_el, slot - cursor)
-                    cursor = slot
-
-                # Determine note duration strictly bounded by next slot or end of bar
-                next_slot = bar_events[i + 1][0] if (i + 1 < len(bar_events)) else bar_divisions
-                max_allowed = max(1, next_slot - slot)
-                slot_dur = min(max_allowed, raw_slot_dur)
-
                 for idx, (n_obj, s_num, f_num) in enumerate(slot_items):
-                    _append_note(measure_el, n_obj, s_num, f_num, slot_dur, chord=idx > 0,
-                                 fifths=fifths, drum_part_id=drum_part_id)
+                    _append_note(measure_el, n_obj, s_num, f_num, dur, chord=idx > 0,
+                                 fifths=fifths, drum_part_id=drum_part_id,
+                                 tie_stop=tie_stop, tie_start=tie_start)
+                cursor = slot + dur
 
-                cursor += slot_dur
-
-            # Fill trailing rest if measure is not full using standard rest durations
+            # Fill the rest of the bar (a whole-bar rest if it held no notes)
             if cursor < bar_divisions:
                 _append_rests(measure_el, bar_divisions - cursor)
 

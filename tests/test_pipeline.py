@@ -270,6 +270,61 @@ class TestBandTranscriber(unittest.TestCase):
         # The fretboard editor offers only string instruments
         self.assertEqual([p["id"] for p in ScoreFretEditor(xml_out).parts], ["P2", "P4"])
 
+    def test_long_notes_are_tied_across_bar_lines(self):
+        """A note crossing a bar line, or lasting 5 sixteenths, becomes tied standard values."""
+        notes = [pretty_midi.Note(velocity=90, pitch=64, start=1.5, end=3.0),   # beat 4 of bar 1 -> bar 2
+                 pretty_midi.Note(velocity=90, pitch=67, start=3.0, end=3.625)]  # 5 sixteenths at 120 BPM
+        root = self._build_single_part("lead", notes)
+        played = [(m.get("number"), n) for m in root.iter("measure") for n in m.findall("note")
+                  if n.find("rest") is None]
+        summary = [(bar, int(n.findtext("duration")), [t.get("type") for t in n.findall("tie")])
+                   for bar, n in played]
+        self.assertEqual(summary, [("1", 4, ["start"]), ("2", 8, ["stop"]),
+                                   ("2", 4, ["start"]), ("2", 1, ["stop"])])
+        for _, n in played:  # notation programs draw ties from <tied>
+            self.assertEqual(len(n.findall("notations/tied")), len(n.findall("tie")))
+            self.assertIsNotNone(n.find("notations/technical/fret"))
+
+    def test_bar_lines_follow_the_downbeat(self):
+        """Bar 1 starts on the downbeat; earlier notes become a pickup after leading rests."""
+        notes = [pretty_midi.Note(velocity=90, pitch=60, start=0.2, end=0.4),   # before the downbeat
+                 pretty_midi.Note(velocity=90, pitch=62, start=0.7, end=0.9)]   # on the downbeat
+        pm = pretty_midi.PrettyMIDI()
+        inst = pretty_midi.Instrument(program=29)
+        inst.notes = notes
+        pm.instruments.append(inst)
+        mid = os.path.join(self.test_dir, "test_downbeat.mid")
+        pm.write(mid)
+        xml_out = os.path.join(self.test_dir, "test_downbeat.musicxml")
+        build_musicxml_score("", "", mid, "", xml_out, selected_parts=["lead"], bpm=120.0, downbeat=0.7)
+        root = ET.parse(xml_out).getroot()
+
+        def onset_slots(measure):
+            pos, result = 0, []
+            for n in measure.findall("note"):
+                if n.find("rest") is None and n.find("chord") is None:
+                    result.append((pos, n.findtext("pitch/step")))
+                if n.find("chord") is None:
+                    pos += int(n.findtext("duration"))
+            return result
+
+        bar1, bar2 = root.findall("./part/measure")[:2]
+        self.assertEqual(onset_slots(bar1), [(12, "C")])  # 0.5 s before the downbeat = 4 sixteenths early
+        self.assertEqual(onset_slots(bar2), [(0, "D")])
+
+    def test_editor_moves_a_whole_tie_chain(self):
+        notes = [pretty_midi.Note(velocity=90, pitch=64, start=1.5, end=3.0)]
+        self._build_single_part("lead", notes)
+        xml_path = os.path.join(self.test_dir, "test_lead_only.musicxml")
+        editor = ScoreFretEditor(xml_path)
+        self.assertEqual(len(editor.get_measure_notes("P4", 1)), 1)
+        self.assertEqual(editor.get_measure_notes("P4", 2), [])  # the tied continuation is not a new note
+        self.assertTrue(editor.update_note_position("P4", 1, 0, 2, 5))
+        editor.save_xml()
+        frets = [(n.findtext("notations/technical/string"), n.findtext("notations/technical/fret"))
+                 for n in ET.parse(xml_path).getroot().iter("note") if n.find("rest") is None]
+        self.assertEqual(frets, [("2", "5"), ("2", "5")])
+
     def test_lilypond_drums_and_tab_clefs(self):
         ly = (
             'PartPOneVoiceOne =  \\relative f\' {\n'
