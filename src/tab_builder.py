@@ -55,6 +55,7 @@ PART_SOUNDS = {
     "bass": ("Electric Bass", 34),
     "rhythm": ("Electric Guitar", 28),
     "lead": ("Overdriven Guitar", 30),
+    "vocals": ("Voice", 54),
 }
 
 # Pitch spelling (step, alter) per pitch class for sharp and flat keys
@@ -418,8 +419,11 @@ def _append_rests(measure_el: ET.Element, dur: int):
 
 def _append_note(measure_el: ET.Element, note, string_num, fret_num, dur: int, chord: bool,
                  fifths: int = 0, drum_part_id: str = None,
-                 tie_stop: bool = False, tie_start: bool = False):
-    """Appends one pitched (or, for drum parts, unpitched) note with optional string/fret and ties."""
+                 tie_stop: bool = False, tie_start: bool = False, lyric: tuple = None):
+    """
+    Appends one pitched (or, for drum parts, unpitched) note with optional string/fret,
+    ties and a (text, syllabic) lyric.
+    """
     n_el = ET.SubElement(measure_el, "note")
     if chord:
         ET.SubElement(n_el, "chord")
@@ -463,6 +467,12 @@ def _append_note(measure_el: ET.Element, note, string_num, fret_num, dur: int, c
         ET.SubElement(tech, "string").text = str(string_num)
         ET.SubElement(tech, "fret").text = str(fret_num)
 
+    if lyric:
+        text, syllabic = lyric
+        lyric_el = ET.SubElement(n_el, "lyric", number="1")
+        ET.SubElement(lyric_el, "syllabic").text = syllabic
+        ET.SubElement(lyric_el, "text").text = text
+
 
 def _add_score_part(part_list: ET.Element, part_key: str, pid: str, pname: str, pabbr: str,
                     ptype: str, data: list, channel: int):
@@ -490,7 +500,7 @@ def _add_score_part(part_list: ET.Element, part_key: str, pid: str, pname: str, 
 
 
 def _add_first_measure_attributes(measure_el: ET.Element, ptype: str, divisions: int,
-                                  fifths: int, mode: str):
+                                  fifths: int, mode: str, octave_down: bool = True):
     attrib = ET.SubElement(measure_el, "attributes")
     ET.SubElement(attrib, "divisions").text = str(divisions)
 
@@ -509,13 +519,14 @@ def _add_first_measure_attributes(measure_el: ET.Element, ptype: str, divisions:
         ET.SubElement(clef, "line").text = "2"
         return
 
-    # Guitar and bass sound an octave below written pitch: treble 8vb / bass 8vb
+    # Guitar, bass (and low voices) sound an octave below written pitch: treble 8vb / bass 8vb
     ET.SubElement(clef, "sign").text = "F" if ptype == "bass" else "G"
     ET.SubElement(clef, "line").text = "4" if ptype == "bass" else "2"
-    ET.SubElement(clef, "clef-octave-change").text = "-1"
+    if octave_down:
+        ET.SubElement(clef, "clef-octave-change").text = "-1"
 
     # String tuning, so notation programs read each note's string/fret correctly
-    # (line 1 is the lowest string)
+    # (line 1 is the lowest string; a vocal melody carries guitar TAB)
     tuning = BASS_TUNING if ptype == "bass" else GUITAR_TUNING
     details = ET.SubElement(attrib, "staff-details")
     for line_no in range(1, len(tuning) + 1):
@@ -545,12 +556,17 @@ def build_musicxml_score(
     song_title: str = "AI Band Transcription",
     selected_parts: list = None,
     bpm: float = 120.0,
-    downbeat: float = 0.0
+    downbeat: float = 0.0,
+    vocal_midi_path: str = "",
+    lyrics: list = None
 ) -> str:
     """
     Combines transcribed MIDIs into a clean, multi-part or single-part MusicXML score
     with Tablature, Notation, accurate measure-beat quantization, rests, ties and chords.
     `downbeat` is the time (s) of any downbeat; bar lines are aligned to it.
+    The vocal melody (part 'vocals') is written with guitar TAB for the notes a guitar
+    can play, and `lyrics` ([{"start", "pitch", "text", "syllabic"}], matched to the
+    vocal MIDI notes by onset and pitch) under its notes.
     """
     os.makedirs(os.path.dirname(output_xml_path) or '.', exist_ok=True)
     
@@ -564,19 +580,29 @@ def build_musicxml_score(
     bass_pm = pretty_midi.PrettyMIDI(bass_midi_path) if ('bass' in selected_parts and bass_midi_path and os.path.exists(bass_midi_path)) else None
     lead_pm = pretty_midi.PrettyMIDI(lead_midi_path) if ('lead' in selected_parts and lead_midi_path and os.path.exists(lead_midi_path)) else None
     rhythm_pm = pretty_midi.PrettyMIDI(rhythm_midi_path) if ('rhythm' in selected_parts and rhythm_midi_path and os.path.exists(rhythm_midi_path)) else None
+    vocal_pm = pretty_midi.PrettyMIDI(vocal_midi_path) if ('vocals' in selected_parts and vocal_midi_path and os.path.exists(vocal_midi_path)) else None
 
     # Optimize tablatures
     bass_notes = sorted(bass_pm.instruments[0].notes, key=lambda x: x.start) if bass_pm and bass_pm.instruments else []
     lead_notes = sorted(lead_pm.instruments[0].notes, key=lambda x: x.start) if lead_pm and lead_pm.instruments else []
     rhythm_notes = sorted(rhythm_pm.instruments[0].notes, key=lambda x: x.start) if rhythm_pm and rhythm_pm.instruments else []
     drum_notes = sorted(drum_pm.instruments[0].notes, key=lambda x: x.start) if drum_pm and drum_pm.instruments else []
+    vocal_notes = sorted(vocal_pm.instruments[0].notes, key=lambda x: x.start) if vocal_pm and vocal_pm.instruments else []
 
     bass_tab = optimize_tablature(bass_notes, BASS_TUNING, max_fret=15) if 'bass' in selected_parts else []
     lead_tab = optimize_tablature(lead_notes, GUITAR_TUNING, max_fret=22) if 'lead' in selected_parts else []
     rhythm_tab = optimize_tablature(rhythm_notes, GUITAR_TUNING, max_fret=16) if 'rhythm' in selected_parts else []
 
+    # Vocal melody: guitar fingering where a guitar reaches, plain notes elsewhere
+    vocal_tab = optimize_tablature(vocal_notes, GUITAR_TUNING, max_fret=22)
+    tabbed = {id(n) for n, _, _ in vocal_tab}
+    vocal_tab = sorted(vocal_tab + [(n, None, None) for n in vocal_notes if id(n) not in tabbed],
+                       key=lambda item: item[0].start)
+    low_voice = bool(vocal_notes) and float(np.median([n.pitch for n in vocal_notes])) < 60
+    lyric_map = {(round(l["start"], 3), l["pitch"]): (l["text"], l["syllabic"]) for l in (lyrics or [])}
+
     # One key signature for all pitched parts
-    fifths, mode = estimate_key([n for n, _, _ in bass_tab + lead_tab + rhythm_tab])
+    fifths, mode = estimate_key([n for n, _, _ in bass_tab + lead_tab + rhythm_tab + vocal_tab])
 
     # Construct clean MusicXML DOM
     score = ET.Element("score-partwise", version="3.1")
@@ -590,6 +616,7 @@ def build_musicxml_score(
     part_list = ET.SubElement(score, "part-list")
     
     available_parts = [
+        ("vocals", "P5", "Vocals", "Vox", vocal_tab, "vocal"),
         ("drums", "P1", "Drums", "Drums", drum_notes, "drum"),
         ("bass", "P2", "Bass Guitar", "Bass", bass_tab, "bass"),
         ("rhythm", "P3", "Rhythm Guitar", "Rhythm", rhythm_tab, "guitar"),
@@ -598,7 +625,7 @@ def build_musicxml_score(
     parts_info = [p for p in available_parts if p[0] in selected_parts]
     if not parts_info:
         # Fallback to lead if all deselected
-        parts_info = [available_parts[3]]
+        parts_info = [p for p in available_parts if p[0] == "lead"]
     
     for channel, (part_key, pid, pname, pabbr, data, ptype) in enumerate(parts_info, start=1):
         _add_score_part(part_list, part_key, pid, pname, pabbr, ptype, data, channel)
@@ -635,7 +662,8 @@ def build_musicxml_score(
             measure_el = ET.SubElement(part_el, "measure", number=str(bar_num))
 
             if bar_num == 1:
-                _add_first_measure_attributes(measure_el, ptype, divisions, fifths, mode)
+                _add_first_measure_attributes(measure_el, ptype, divisions, fifths, mode,
+                                              octave_down=(ptype != "vocal" or low_voice))
                 if part_idx == 0:
                     _add_tempo(measure_el, bpm)
 
@@ -645,9 +673,12 @@ def build_musicxml_score(
                 if slot > cursor:
                     _append_rests(measure_el, slot - cursor)
                 for idx, (n_obj, s_num, f_num) in enumerate(slot_items):
+                    lyric = None
+                    if ptype == "vocal" and idx == 0 and not tie_stop:
+                        lyric = lyric_map.get((round(n_obj.start, 3), n_obj.pitch))
                     _append_note(measure_el, n_obj, s_num, f_num, dur, chord=idx > 0,
                                  fifths=fifths, drum_part_id=drum_part_id,
-                                 tie_stop=tie_stop, tie_start=tie_start)
+                                 tie_stop=tie_stop, tie_start=tie_start, lyric=lyric)
                 cursor = slot + dur
 
             # Fill the rest of the bar (a whole-bar rest if it held no notes)

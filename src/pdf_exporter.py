@@ -60,6 +60,48 @@ PERCUSSION_CLEF = (
 )
 
 
+VOCAL_BLOCK = re.compile(r'\\new Staff\s*<<\s*\\set Staff\.instrumentName = "Vocals".*?>>\s*>>', re.DOTALL)
+
+
+def _voice_definition(part: str) -> re.Pattern:
+    """A voice definition runs until the next unindented line (next definition or \\score)."""
+    return re.compile(rf'^{part}\s*=.*?(?=^\S)', re.DOTALL | re.MULTILINE)
+
+
+def _convert_vocals(ly_content: str, style: str, vocal_clef: str) -> str:
+    """
+    Lays out the vocal melody for the style, keeping its lyrics in every style:
+    standard staff (guitar string numbers hidden; they only drive the TAB), TAB with
+    the lyrics under it, or both.
+    """
+    m = VOCAL_BLOCK.search(ly_content)
+    if not m:
+        return ly_content
+    lyrics = re.search(r'\\new Lyrics \\lyricsto "PartPFiveVoiceOne" \{[^}]*\}', m.group(0))
+    lyrics_line = ("            " + lyrics.group(0) + "\n") if lyrics else ""
+    staff = (
+        '\\new Staff\n'
+        '        <<\n'
+        '            \\set Staff.instrumentName = "Vocals"\n'
+        '            \\set Staff.shortInstrumentName = "Vox"\n'
+        '            \\override Staff.StringNumber.stencil = ##f\n'
+        f'            \\context Voice = "PartPFiveVoiceOne" {{ \\clef "{vocal_clef}" \\PartPFiveVoiceOne }}\n'
+        f'{lyrics_line}'
+        '        >>'
+    )
+    tab = (
+        '\\new TabStaff \\with { stringTunings = #guitar-tuning }\n'
+        '        <<\n'
+        '            \\set TabStaff.instrumentName = "Vocals (TAB)"\n'
+        '            \\set TabStaff.shortInstrumentName = "Vox"\n'
+        '            \\context TabVoice = "PartPFiveVoiceOne" { \\PartPFiveVoiceOne }\n'
+        f'{lyrics_line if style == "tab" else ""}'
+        '        >>'
+    )
+    replacement = {"standard": staff, "both": staff + "\n        " + tab, "tab": tab}[style]
+    return ly_content[:m.start()] + replacement + ly_content[m.end():]
+
+
 def convert_ly_to_tab_style(ly_content: str, style: str = "tab") -> str:
     """
     Transforms LilyPond Staff contexts into genuine Guitar & Bass TabStaff
@@ -81,15 +123,23 @@ def convert_ly_to_tab_style(ly_content: str, style: str = "tab") -> str:
     ly_content = ly_content.replace("\\context DrumVoice", "\\context Voice")
     ly_content = ly_content.replace('\\clef "percussion"', PERCUSSION_CLEF)
 
-    if style == "standard":
-        return ly_content
+    # Lyrics: no "1." stanza label in front of a single verse
+    ly_content = re.sub(r'\\set stanza = "[^"]*"\s*', '', ly_content)
 
-    # 2. Strip every \clef (e.g. "treble_8", "bass_8") from instrument voices P2, P3, P4
+    # The vocal clef (treble or treble_8, by voice range) before any clef is stripped
+    vocal_def = _voice_definition("PartPFiveVoiceOne").search(ly_content)
+    vocal_clef = re.search(r'\\clef\s+"([^"]+)"', vocal_def.group(0)) if vocal_def else None
+    vocal_clef = vocal_clef.group(1) if vocal_clef else "treble"
+
+    if style == "standard":
+        return _convert_vocals(ly_content, style, vocal_clef)
+
+    # 2. Strip every \clef (e.g. "treble_8", "bass_8") from instrument voices P2-P5
     # so LilyPond doesn't force a 5-line musical notation staff inside the TabStaff.
-    # A voice definition runs until the next unindented line (next definition or \score).
-    for part in ["PartPTwoVoiceOne", "PartPThreeVoiceOne", "PartPFourVoiceOne"]:
-        pattern = re.compile(rf'^{part}\s*=.*?(?=^\S)', re.DOTALL | re.MULTILINE)
-        ly_content = pattern.sub(lambda m: re.sub(r'\\clef\s+"[^"]+"\s*', '', m.group(0)), ly_content)
+    for part in ["PartPTwoVoiceOne", "PartPThreeVoiceOne", "PartPFourVoiceOne", "PartPFiveVoiceOne"]:
+        ly_content = _voice_definition(part).sub(
+            lambda m: re.sub(r'\\clef\s+"[^"]+"\s*', '', m.group(0)), ly_content)
+    ly_content = _convert_vocals(ly_content, style, vocal_clef)
 
     if style == "both":
         # Both: Paired Standard 5-line Staff + 6-line/4-line TabStaff

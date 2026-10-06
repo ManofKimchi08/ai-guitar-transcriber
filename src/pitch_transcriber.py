@@ -28,7 +28,7 @@ def transcribe_pitch(
     Args:
         audio_path: Path to the input WAV audio.
         output_midi_path: Path where the resulting .mid will be saved.
-        instrument_name: 'bass', 'guitar_lead', or 'guitar_rhythm'.
+        instrument_name: 'bass', 'guitar_lead', 'guitar_rhythm', or 'vocals'.
         engine: 'crepe' (SOTA high-precision) or 'basic_pitch'.
         crepe_batch_size: TorchCREPE frames per GPU batch (lower = less VRAM, same accuracy).
 
@@ -93,9 +93,11 @@ def transcribe_with_crepe(
     hop_length = 320
     time_step = hop_length / 16000.0
 
-    fmin = 35.0 if instrument_name == "bass" else 75.0
-    fmax = 350.0 if instrument_name == "bass" else 1400.0
-    conf_thresh = 0.25 if instrument_name == "bass" else 0.35
+    # (fmin Hz, fmax Hz, confidence threshold, lowest MIDI note, highest MIDI note)
+    fmin, fmax, conf_thresh, low_note, high_note = {
+        "bass": (35.0, 350.0, 0.25, 28, 60),
+        "vocals": (65.0, 1100.0, 0.45, 36, 90),  # C2..C#6; breathy/unvoiced frames dropped
+    }.get(instrument_name, (75.0, 1400.0, 0.35, 40, 88))
 
     x = torch.from_numpy(y_norm).unsqueeze(0).float().to(device)
 
@@ -172,7 +174,7 @@ def transcribe_with_crepe(
                         velocity=vel, pitch=med_p, start=s_t, end=e_t
                     ))
             else:
-                if 40 <= med_p <= 88:
+                if low_note <= med_p <= high_note:
                     vel = int(np.clip(50 + np.mean(r_samples) * 300, 50, 120))
                     notes.append(pretty_midi.Note(
                         velocity=vel, pitch=med_p, start=s_t, end=e_t
@@ -210,8 +212,8 @@ def transcribe_with_crepe(
         emit_note(note_start, min_len * time_step, accum_pitches, accum_rms)
 
     pm = pretty_midi.PrettyMIDI(initial_tempo=120.0)
-    prog = 33 if instrument_name == "bass" else 29
-    inst_name = "Electric Bass" if instrument_name == "bass" else "Lead Guitar"
+    prog, inst_name = {"bass": (33, "Electric Bass"), "vocals": (53, "Vocals")}.get(
+        instrument_name, (29, "Lead Guitar"))
     inst = pretty_midi.Instrument(program=prog, is_drum=False, name=inst_name)
     inst.notes = notes
     pm.instruments.append(inst)
@@ -258,6 +260,13 @@ def transcribe_with_basic_pitch(
                     if 28 <= n.pitch <= 60 and (n.end - n.start) >= 0.06 and n.velocity >= 30:
                         filtered.append(n)
                 inst.notes = filtered
+            elif instrument_name == "vocals":
+                inst.program = 53
+                inst.name = "Vocals"
+                inst.notes = [
+                    n for n in inst.notes
+                    if 36 <= n.pitch <= 90 and (n.end - n.start) >= 0.06 and n.velocity >= 30
+                ]
             elif instrument_name == "guitar_lead":
                 inst.program = 29
                 inst.name = "Lead Guitar"

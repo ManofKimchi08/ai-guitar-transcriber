@@ -18,14 +18,18 @@ from src.youtube_downloader import download_youtube_audio
 from src.pdf_exporter import export_score_to_pdf
 
 
-ALL_PARTS = ['drums', 'bass', 'rhythm', 'lead']
+ALL_PARTS = ['drums', 'bass', 'rhythm', 'lead', 'vocals']
+DEFAULT_PARTS = ['drums', 'bass', 'rhythm', 'lead']
 
 # GPU memory profiles. Peak activations measured per setting: htdemucs ~0.7 GB at
 # its default 7.8 s segment (~0.5 GB at 5 s); TorchCREPE 'full' ~2.5 GB per 1024
 # frames. Both steps also retry with smaller settings if the GPU still runs out.
+# Whisper (lyrics): large-v3 in float16 needs ~4.5 GB; large-v3-turbo in int8 far less.
 VRAM_PROFILES = {
-    "8gb": {"label": "8GB 이상 (표준)", "demucs_segment": None, "crepe_batch_size": 1024},
-    "4gb": {"label": "4GB (저사양)", "demucs_segment": 5, "crepe_batch_size": 512},
+    "8gb": {"label": "8GB 이상 (표준)", "demucs_segment": None, "crepe_batch_size": 1024,
+            "whisper_model": "large-v3", "whisper_compute": "float16"},
+    "4gb": {"label": "4GB (저사양)", "demucs_segment": 5, "crepe_batch_size": 512,
+            "whisper_model": "large-v3-turbo", "whisper_compute": "int8_float16"},
 }
 
 
@@ -126,6 +130,44 @@ def analyze_beats(audio_path: str, default_bpm: float = 120.0) -> tuple:
     return bpm, float(grid[position])
 
 
+def recognize_lyrics(vocals_wav: str, vocal_midi: str, vram_profile: dict, language: str,
+                     text_path: str, log=print) -> list:
+    """
+    Runs Whisper on the vocal stem, writes the lyrics as plain text, and places them
+    syllable by syllable on the vocal melody notes.
+    Returns [{"start", "pitch", "text", "syllabic"}] for build_musicxml_score.
+    """
+    import pretty_midi
+    import torch
+    from src.lyrics import transcribe_lyrics, words_to_syllables, align_syllables_to_notes
+
+    cuda = torch.cuda.is_available()
+    if cuda:
+        torch.cuda.empty_cache()  # hand TorchCREPE's cached GPU memory over to Whisper
+    model = vram_profile["whisper_model"] if cuda else "large-v3-turbo"
+    compute = vram_profile["whisper_compute"] if cuda else "int8"
+    log(f"  - Whisper {model} ({compute}) 가사 인식 중... (처음 한 번은 모델을 내려받습니다)")
+    try:
+        result = transcribe_lyrics(vocals_wav, model_size=model, device="cuda" if cuda else "cpu",
+                                   compute_type=compute, language=language)
+    except Exception as e:
+        if not cuda:
+            raise
+        # e.g. CTranslate2 not finding its CUDA libraries: the CPU still works, just slower
+        log(f"  ! GPU 가사 인식 실패 ({e}) → CPU (large-v3-turbo, int8)로 다시 시도합니다...")
+        result = transcribe_lyrics(vocals_wav, model_size="large-v3-turbo", device="cpu",
+                                   compute_type="int8", language=language)
+
+    with open(text_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(result["lines"]) + "\n")
+
+    notes = sorted(pretty_midi.PrettyMIDI(vocal_midi).instruments[0].notes, key=lambda n: n.start)
+    placed = align_syllables_to_notes(words_to_syllables(result["words"], result["language"]), notes)
+    log(f"  ✓ 가사 {len(result['words'])}단어 인식 (언어: {result['language']}), 음표 {len(placed)}개에 배치")
+    log(f"  ✓ 가사 텍스트: {os.path.basename(text_path)}")
+    return [{"start": n.start, "pitch": n.pitch, "text": t, "syllabic": s} for n, t, s in placed]
+
+
 def run_pipeline(
     input_audio: str,
     output_dir: str,
@@ -133,6 +175,8 @@ def run_pipeline(
     style: str = "tab",
     skip_separation: bool = False,
     vram: str = None,
+    lyrics: bool = True,
+    lyrics_language: str = None,
     log=print,
     progress=None
 ) -> dict:
@@ -142,15 +186,19 @@ def run_pipeline(
     Args:
         input_audio: Path to an audio file or a YouTube URL.
         output_dir: Root output folder; results go to <output_dir>/<song>/.
-        parts: Subset of ALL_PARTS to transcribe (default: all).
+        parts: Subset of ALL_PARTS to transcribe (default: DEFAULT_PARTS, the band
+            without vocals). 'vocals' adds the vocal melody with its lyrics.
         style: PDF style 'tab', 'standard' or 'both'.
         skip_separation: Reuse this song's existing stems instead of re-running Demucs.
         vram: Key of VRAM_PROFILES ('8gb' or '4gb'); None detects it from the GPU.
+        lyrics: Recognize lyrics (Whisper) for the vocal melody.
+        lyrics_language: Whisper language code ('ko', 'en', 'ja', ...); None detects it.
         log: Called with each log line.
         progress: Called as progress(status_text, fraction) at each stage.
 
     Returns:
-        dict with song_title, song_dir, score_xml, pdf_path, bpm, downbeat, midi_paths, elapsed.
+        dict with song_title, song_dir, score_xml, pdf_path, lyrics_txt, bpm, downbeat,
+        midi_paths, elapsed.
     """
     progress = progress or (lambda text, fraction: None)
     start_time = time.time()
@@ -158,7 +206,7 @@ def run_pipeline(
     os.makedirs(out_root, exist_ok=True)
 
     if parts is None:
-        parts = ALL_PARTS
+        parts = DEFAULT_PARTS
     selected_parts = [p.strip().lower() for p in parts if p.strip()]
     if not selected_parts:
         selected_parts = ['lead']
@@ -197,8 +245,10 @@ def run_pipeline(
     drums_wav = os.path.join(stems_dir, "drums.wav")
     bass_wav = os.path.join(stems_dir, "bass.wav")
     guitar_wav = os.path.join(stems_dir, "guitar.wav")
+    vocals_wav = os.path.join(stems_dir, "vocals.wav")
 
-    if skip_separation and all(os.path.exists(p) for p in (drums_wav, bass_wav, guitar_wav)):
+    needed = [drums_wav, bass_wav, guitar_wav] + ([vocals_wav] if "vocals" in selected_parts else [])
+    if skip_separation and all(os.path.exists(p) for p in needed):
         log("\n--- [Step 1] 기존 분리 음원 재사용 (분리 건너뜀) ---")
     else:
         progress("1/4 단계: Meta Demucs 6-Stem 음원 분리 중 (GPU)...", 0.15)
@@ -208,7 +258,8 @@ def run_pipeline(
         drums_wav = stems.get("drums", drums_wav)
         bass_wav = stems.get("bass", bass_wav)
         guitar_wav = stems.get("guitar", guitar_wav)
-        log("✓ 분리 완료: 드럼, 베이스, 기타 스템 생성됨")
+        vocals_wav = stems.get("vocals", vocals_wav)
+        log("✓ 분리 완료: 드럼, 베이스, 기타, 보컬 스템 생성됨")
 
     # -------------------------------------------------------------
     # Step 2: Split Guitar into Lead and Rhythm
@@ -241,6 +292,8 @@ def run_pipeline(
          lambda wav, mid: transcribe_pitch(wav, mid, instrument_name="guitar_lead", crepe_batch_size=crepe_batch)),
         ("rhythm", rhythm_wav, "rhythm_guitar.mid", "리듬 기타 다성 화음 분석 중 (CQT 크로마 & 6줄 타브 폼)...",
          lambda wav, mid: transcribe_pitch(wav, mid, instrument_name="guitar_rhythm", crepe_batch_size=crepe_batch)),
+        ("vocals", vocals_wav, "vocals.mid", "보컬 멜로디 추적 중 (TorchCREPE GPU)...",
+         lambda wav, mid: transcribe_pitch(wav, mid, instrument_name="vocals", crepe_batch_size=crepe_batch)),
     ]
 
     # Only MIDIs written in this run go into the score, never leftovers on disk.
@@ -257,6 +310,19 @@ def run_pipeline(
         midi_paths[part] = midi_path
         log(f"  ✓ {part} MIDI: {midi_name}")
 
+    # Lyrics for the vocal melody (optional: the melody stands on its own if this fails)
+    vocal_lyrics, lyrics_txt = None, None
+    if "vocals" in midi_paths and lyrics:
+        progress("가사 인식 중 (Whisper)...", 0.80)
+        log("\n--- [Step 3+] 가사 인식 (Whisper) ---")
+        try:
+            lyrics_txt = os.path.join(score_dir, f"{song_title}_lyrics.txt")
+            vocal_lyrics = recognize_lyrics(vocals_wav, midi_paths["vocals"], vram_profile,
+                                            lyrics_language, lyrics_txt, log=log)
+        except Exception as e:
+            lyrics_txt = None
+            log(f"  ! 가사 인식을 건너뜁니다 (멜로디 악보는 그대로 생성): {e}")
+
     # -------------------------------------------------------------
     # Step 4: Tablature Optimization & MusicXML / PDF
     # -------------------------------------------------------------
@@ -266,7 +332,7 @@ def run_pipeline(
     bpm, downbeat = analyze_beats(input_path)
     log(f"  ✓ 곡 템포 자동 분석: {bpm:.1f} BPM, 첫 강박 {downbeat:.2f}초 (마디선 정렬)")
 
-    part_suffix = "" if len(selected_parts) == len(ALL_PARTS) else f"_{'_'.join(selected_parts)}"
+    part_suffix = "" if sorted(selected_parts) == sorted(DEFAULT_PARTS) else f"_{'_'.join(selected_parts)}"
     score_xml = os.path.join(score_dir, f"{song_title}{part_suffix}_score.musicxml")
     build_musicxml_score(
         drum_midi_path=midi_paths.get("drums", ""),
@@ -277,7 +343,9 @@ def run_pipeline(
         song_title=song_title,
         selected_parts=selected_parts,
         bpm=bpm,
-        downbeat=downbeat
+        downbeat=downbeat,
+        vocal_midi_path=midi_paths.get("vocals", ""),
+        lyrics=vocal_lyrics
     )
     log(f"  ✓ MusicXML 악보: {os.path.basename(score_xml)}")
 
@@ -301,6 +369,7 @@ def run_pipeline(
         "song_dir": song_dir,
         "score_xml": score_xml,
         "pdf_path": pdf_path,
+        "lyrics_txt": lyrics_txt,
         "bpm": bpm,
         "downbeat": downbeat,
         "midi_paths": midi_paths,

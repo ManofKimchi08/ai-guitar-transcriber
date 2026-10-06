@@ -22,8 +22,12 @@ sys.path.insert(0, PROJECT_DIR)
 
 from src.pipeline import run_pipeline, is_url, VRAM_PROFILES, vram_profile_for
 from src.fretboard_gui import FretboardEditorDialog
+from src.lyrics_gui import LyricsEditorDialog
 
 OUTPUT_ROOT = os.path.join(PROJECT_DIR, "output")
+
+# Lyrics language choices -> Whisper language code (None = detect)
+LYRICS_LANGUAGES = {"자동 감지": None, "한국어": "ko", "English": "en", "日本語": "ja"}
 
 # Set CustomTkinter theme
 ctk.set_appearance_mode("Dark")
@@ -120,6 +124,16 @@ class BandTranscriberApp(ctk.CTk):
         )
         self.btn_fret_editor.grid(row=2, column=1, padx=6, pady=(2, 8), sticky="ew")
 
+        self.btn_lyrics_editor = ctk.CTkButton(
+            bottom_frame,
+            text="🎤 가사 수정 (Lyrics Editor)",
+            height=38,
+            fg_color="#8E44AD",
+            hover_color="#6C3483",
+            command=self._open_lyrics_editor
+        )
+        self.btn_lyrics_editor.grid(row=3, column=0, columnspan=2, padx=6, pady=(0, 8), sticky="ew")
+
         # 2. Main Scrollable Container (Takes all remaining vertical space, scrolls smoothly)
         scroll_body = ctk.CTkScrollableFrame(self, corner_radius=0, fg_color="transparent")
         scroll_body.pack(side="top", fill="both", expand=True, padx=8, pady=(4, 2))
@@ -137,7 +151,7 @@ class BandTranscriberApp(ctk.CTk):
 
         subtitle_label = ctk.CTkLabel(
             header_frame,
-            text="음원을 드럼, 베이스, 리드 기타, 리듬 기타로 분리하고 오선보/타브(TAB) 악보를 자동 생성합니다.",
+            text="음원을 드럼, 베이스, 리드/리듬 기타, 보컬로 분리하고 오선보/타브(TAB) 악보와 가사를 자동 생성합니다.",
             font=ctk.CTkFont(size=12),
             text_color="gray75"
         )
@@ -206,6 +220,19 @@ class BandTranscriberApp(ctk.CTk):
         self.chk_rhythm = ctk.CTkCheckBox(chk_container, text="🎸 리듬 기타 (Rhythm TAB)")
         self.chk_rhythm.select()
         self.chk_rhythm.pack(side="left", padx=18)
+
+        vocal_row = ctk.CTkFrame(opt_frame, fg_color="transparent")
+        vocal_row.pack(fill="x", padx=15, pady=(0, 8))
+
+        self.chk_vocals = ctk.CTkCheckBox(vocal_row, text="🎤 보컬 멜로디 + 가사 (Vocals)")
+        self.chk_vocals.pack(side="left", padx=(0, 18))
+
+        lbl_lang = ctk.CTkLabel(vocal_row, text="가사 언어:")
+        lbl_lang.pack(side="left", padx=(18, 6))
+
+        self.opt_lyrics_lang = ctk.CTkOptionMenu(vocal_row, values=list(LYRICS_LANGUAGES), width=120)
+        self.opt_lyrics_lang.set("자동 감지")
+        self.opt_lyrics_lang.pack(side="left")
 
         lbl_style = ctk.CTkLabel(opt_frame, text="악보 출력 형태 (PDF):", font=ctk.CTkFont(weight="bold"))
         lbl_style.pack(anchor="w", padx=15, pady=(2, 4))
@@ -287,6 +314,7 @@ class BandTranscriberApp(ctk.CTk):
         if self.chk_bass.get(): parts.append('bass')
         if self.chk_rhythm.get(): parts.append('rhythm')
         if self.chk_lead.get(): parts.append('lead')
+        if self.chk_vocals.get(): parts.append('vocals')
         return parts
 
     def _selected_style(self) -> str:
@@ -327,18 +355,22 @@ class BandTranscriberApp(ctk.CTk):
         parts = self._selected_parts()
         style = self._selected_style()
         vram = self._selected_vram()
+        lyrics_language = LYRICS_LANGUAGES[self.opt_lyrics_lang.get()]
 
-        thread = threading.Thread(target=self._run_pipeline, args=(input_audio, output_dir, parts, style, vram),
+        thread = threading.Thread(target=self._run_pipeline,
+                                  args=(input_audio, output_dir, parts, style, vram, lyrics_language),
                                   daemon=True)
         thread.start()
         self.after(100, self._drain_ui_queue)
 
-    def _run_pipeline(self, input_audio: str, output_dir: str, parts: list, style: str, vram: str):
+    def _run_pipeline(self, input_audio: str, output_dir: str, parts: list, style: str, vram: str,
+                      lyrics_language: str = None):
         """Worker thread: never touches Tk widgets, only posts messages to the UI queue."""
         post = self._ui_queue.put
         try:
             result = run_pipeline(
                 input_audio, output_dir, parts=parts, style=style, vram=vram,
+                lyrics_language=lyrics_language,
                 log=lambda text: post(("log", text)),
                 progress=lambda text, fraction: post(("status", text, fraction))
             )
@@ -499,28 +531,29 @@ class BandTranscriberApp(ctk.CTk):
         except Exception as e:
             messagebox.showinfo("알림", f"PDF 파일을 열 수 없습니다:\n{e}")
 
-    def _open_fret_editor(self):
+    def _select_score_for_editing(self, title: str):
+        """Returns the score to edit (the current one, or one the user picks), or None."""
         score_path = self.last_score_path
         default_scores = self.last_output_dir or OUTPUT_ROOT
         
         # If no score was generated in current session, ask user to select one
         if not score_path or not os.path.exists(score_path):
             chosen = filedialog.askopenfilename(
-                title="운지를 수정할 타브 악보(MusicXML) 파일을 선택하세요",
+                title=title,
                 initialdir=default_scores if os.path.exists(default_scores) else PROJECT_DIR,
                 filetypes=[("MusicXML 악보 (*.musicxml, *.xml)", "*.musicxml *.xml"), ("모든 파일 (*.*)", "*.*")]
             )
             if chosen and os.path.exists(chosen):
                 score_path = chosen
             else:
-                return
+                return None
 
         self.last_score_path = score_path
         self.btn_open_score.configure(state="normal")
 
         # Also link matching PDF if available
         base_no_ext = os.path.splitext(score_path)[0]
-        for c in [f"{base_no_ext}_TAB.pdf", f"{base_no_ext}.pdf"]:
+        for c in [f"{base_no_ext}_TAB.pdf", f"{base_no_ext}_TAB_Score.pdf", f"{base_no_ext}.pdf"]:
             if os.path.exists(c):
                 self.last_pdf_path = c
                 self.btn_open_pdf.configure(state="normal")
@@ -530,14 +563,26 @@ class BandTranscriberApp(ctk.CTk):
             text=f"🎼 선택된 악보: {os.path.basename(score_path)}",
             text_color="#34C759"
         )
-        self._log(f"\n🎸 프렛보드 편집기 실행: {os.path.basename(score_path)}")
+        return score_path
 
+    def _open_fret_editor(self):
+        score_path = self._select_score_for_editing("운지를 수정할 타브 악보(MusicXML) 파일을 선택하세요")
+        if not score_path:
+            return
+        self._log(f"\n🎸 프렛보드 편집기 실행: {os.path.basename(score_path)}")
         FretboardEditorDialog(self, xml_path=score_path, pdf_callback=self._on_pdf_reexported, style=self._selected_style())
+
+    def _open_lyrics_editor(self):
+        score_path = self._select_score_for_editing("가사를 수정할 악보(MusicXML) 파일을 선택하세요")
+        if not score_path:
+            return
+        self._log(f"\n🎤 가사 편집기 실행: {os.path.basename(score_path)}")
+        LyricsEditorDialog(self, xml_path=score_path, pdf_callback=self._on_pdf_reexported, style=self._selected_style())
 
     def _on_pdf_reexported(self, new_pdf_path):
         self.last_pdf_path = new_pdf_path
         self.btn_open_pdf.configure(state="normal")
-        self._log(f"📄 프렛보드 편집기를 통해 PDF 악보가 갱신되었습니다: {os.path.basename(new_pdf_path)}")
+        self._log(f"📄 편집기를 통해 PDF 악보가 갱신되었습니다: {os.path.basename(new_pdf_path)}")
 
 
 def main():
