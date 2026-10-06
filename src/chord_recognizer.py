@@ -175,7 +175,11 @@ def recognize_chords(audio_path: str, segment_sec: float = 0.5, strums: bool = T
             merged.append(run)
 
     times = librosa.frames_to_time(np.arange(n + 1), sr=sr, hop_length=hop)
-    onsets = librosa.onset.onset_detect(y=y, sr=sr, hop_length=hop, units="time", wait=4)
+    # Strums: onsets with a real rise in energy (the onset envelope is normalized, so a
+    # sustained chord would otherwise show spurious "attacks" on small fluctuations)
+    onset_frames = librosa.onset.onset_detect(y=y, sr=sr, hop_length=hop, units="frames", wait=4)
+    onsets = [float(times[f]) for f in onset_frames
+              if 0 < f < n and rms[f] >= 1.3 * rms[max(0, f - 4):f].min()]
 
     results = []
     for a, b, state in merged:

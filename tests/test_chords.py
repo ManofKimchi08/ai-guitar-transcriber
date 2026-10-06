@@ -85,6 +85,17 @@ class TestChordRecognition(unittest.TestCase):
         self.assertGreaterEqual(matched / len(strums), 0.95)
         self.assertLessEqual(len(attacks), len(strums) + 2)
 
+    def test_held_chords_are_not_restrummed(self):
+        """A sustained chord is one event, not a stream of spurious strums."""
+        sr = 22050
+        t = np.arange(sr * 4) / sr
+        held = lambda freqs: sum(0.2 * np.sin(2 * np.pi * f * t) for f in freqs)
+        out_dir = os.path.join(os.path.dirname(__file__), "test_output", "chords")
+        os.makedirs(out_dir, exist_ok=True)
+        path = os.path.join(out_dir, "held.wav")
+        sf.write(path, np.concatenate([held([130.8, 164.8, 196.0]), held([110.0, 130.8, 164.8])]), sr)
+        self.assertEqual([p["chord"] for p in recognize_chords(path)], ["C", "Am"])
+
     def test_silence_gives_no_chords(self):
         out_dir = os.path.join(os.path.dirname(__file__), "test_output", "chords")
         os.makedirs(out_dir, exist_ok=True)
