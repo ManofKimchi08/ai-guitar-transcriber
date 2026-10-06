@@ -120,6 +120,10 @@ class ScoreFretEditor:
             part_el = self.root.find(f"./part[@id='{pid}']")
             num_measures = len(part_el.findall("measure")) if part_el is not None else 0
 
+            # Drum parts have no strings or frets to edit
+            if part_el is not None and part_el.find("./measure/attributes/clef[sign='percussion']") is not None:
+                continue
+
             parts_list.append({
                 "id": pid,
                 "name": pname,

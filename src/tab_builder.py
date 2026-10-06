@@ -2,7 +2,8 @@
 Tab Builder & MusicXML Generator Module
 Converts MIDI tracks (Drums, Bass, Lead Guitar, Rhythm Guitar) into:
 1. Dynamic Programming (Viterbi) optimized Guitar and Bass Tablature (fret and string positions).
-2. Standard MusicXML score containing both standard musical staves and TAB staves.
+2. A MusicXML score: guitar/bass staves carry their string tuning and per-note string/fret,
+   drums use standard drum-set notation, plus tempo and an estimated key signature.
 3. Compatible with MuseScore 4, TuxGuitar, and Guitar Pro.
 """
 
@@ -28,6 +29,68 @@ BASS_TUNING = {
     3: 33,  # A1
     4: 28,  # E1
 }
+
+# Drum-set notation on a percussion staff: GM drum note -> (display step, octave, notehead, name)
+DRUM_NOTATION = {
+    35: ("F", 4, None, "Acoustic Bass Drum"),
+    36: ("F", 4, None, "Bass Drum"),
+    38: ("C", 5, None, "Snare Drum"),
+    40: ("C", 5, None, "Electric Snare"),
+    41: ("G", 4, None, "Low Floor Tom"),
+    43: ("A", 4, None, "High Floor Tom"),
+    45: ("B", 4, None, "Low Tom"),
+    47: ("D", 5, None, "Low-Mid Tom"),
+    48: ("E", 5, None, "Hi-Mid Tom"),
+    50: ("F", 5, None, "High Tom"),
+    42: ("G", 5, "x", "Closed Hi-Hat"),
+    44: ("D", 4, "x", "Pedal Hi-Hat"),
+    46: ("G", 5, "circle-x", "Open Hi-Hat"),
+    49: ("A", 5, "x", "Crash Cymbal"),
+    51: ("F", 5, "x", "Ride Cymbal"),
+    57: ("A", 5, "x", "Crash Cymbal 2"),
+}
+
+# Playback sound per pitched part type: (instrument name, 1-based General MIDI program)
+PART_SOUNDS = {
+    "bass": ("Electric Bass", 34),
+    "rhythm": ("Electric Guitar", 28),
+    "lead": ("Overdriven Guitar", 30),
+}
+
+# Pitch spelling (step, alter) per pitch class for sharp and flat keys
+SHARP_SPELLING = [("C", 0), ("C", 1), ("D", 0), ("D", 1), ("E", 0), ("F", 0),
+                  ("F", 1), ("G", 0), ("G", 1), ("A", 0), ("A", 1), ("B", 0)]
+FLAT_SPELLING = [("C", 0), ("D", -1), ("D", 0), ("E", -1), ("E", 0), ("F", 0),
+                 ("G", -1), ("G", 0), ("A", -1), ("A", 0), ("B", -1), ("B", 0)]
+
+# Krumhansl-Kessler key profiles and the key signature of each major key by tonic
+MAJOR_PROFILE = np.array([6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88])
+MINOR_PROFILE = np.array([6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17])
+MAJOR_KEY_FIFTHS = [0, -5, 2, -3, 4, -1, 6, 1, -4, 3, -2, 5]  # C, Db, D, Eb, E, F, F#, G, Ab, A, Bb, B
+
+
+def spell_pitch(midi_pitch: int, fifths: int = 0) -> tuple:
+    """Returns (step, alter, octave) for a MIDI pitch, using flats in flat keys."""
+    step, alter = (FLAT_SPELLING if fifths < 0 else SHARP_SPELLING)[midi_pitch % 12]
+    return step, alter, midi_pitch // 12 - 1
+
+
+def estimate_key(notes: list) -> tuple:
+    """Estimates (fifths, mode) from duration-weighted pitch classes (Krumhansl-Schmuckler)."""
+    weights = np.zeros(12)
+    for n in notes:
+        weights[n.pitch % 12] += n.end - n.start
+    if weights.sum() <= 0 or np.allclose(weights, weights[0]):
+        return 0, "major"
+
+    best_r, best_tonic, best_mode = -np.inf, 0, "major"
+    for tonic in range(12):
+        for mode, profile in (("major", MAJOR_PROFILE), ("minor", MINOR_PROFILE)):
+            r = np.corrcoef(weights, np.roll(profile, tonic))[0, 1]
+            if r > best_r:
+                best_r, best_tonic, best_mode = r, tonic, mode
+    relative_major = best_tonic if best_mode == "major" else (best_tonic + 3) % 12
+    return MAJOR_KEY_FIFTHS[relative_major], best_mode
 
 # MusicXML standard durations (at divisions=4 per quarter beat, 16 per 4/4 bar)
 DURATION_TO_TYPE = {
@@ -308,6 +371,125 @@ def quantize_onsets(items: list, seconds_per_div: float, merge_same_slot: bool =
     return events
 
 
+def _append_rests(measure_el: ET.Element, dur: int):
+    """Appends rests filling `dur` divisions, split into standard note values."""
+    for chunk in decompose_duration(dur):
+        r_note = ET.SubElement(measure_el, "note")
+        ET.SubElement(r_note, "rest")
+        ET.SubElement(r_note, "duration").text = str(chunk)
+        ET.SubElement(r_note, "voice").text = "1"
+        add_type_and_dot(r_note, chunk)
+
+
+def _append_note(measure_el: ET.Element, note, string_num, fret_num, dur: int, chord: bool,
+                 fifths: int = 0, drum_part_id: str = None):
+    """Appends one pitched (or, for drum parts, unpitched) note with optional string/fret."""
+    n_el = ET.SubElement(measure_el, "note")
+    if chord:
+        ET.SubElement(n_el, "chord")
+
+    notehead = None
+    if drum_part_id:
+        step, octave, notehead, _ = DRUM_NOTATION.get(note.pitch, ("C", 5, None, ""))
+        unpitched = ET.SubElement(n_el, "unpitched")
+        ET.SubElement(unpitched, "display-step").text = step
+        ET.SubElement(unpitched, "display-octave").text = str(octave)
+    else:
+        step, alter, octave = spell_pitch(note.pitch, fifths)
+        pitch_el = ET.SubElement(n_el, "pitch")
+        ET.SubElement(pitch_el, "step").text = step
+        if alter:
+            ET.SubElement(pitch_el, "alter").text = str(alter)
+        ET.SubElement(pitch_el, "octave").text = str(octave)
+
+    ET.SubElement(n_el, "duration").text = str(dur)
+    if drum_part_id:
+        ET.SubElement(n_el, "instrument", id=f"{drum_part_id}-I{note.pitch}")
+    ET.SubElement(n_el, "voice").text = "1"
+    add_type_and_dot(n_el, dur)
+    if notehead:
+        ET.SubElement(n_el, "notehead").text = notehead
+
+    # Tablature notation for string & fret
+    if string_num is not None and fret_num is not None:
+        notations = ET.SubElement(n_el, "notations")
+        tech = ET.SubElement(notations, "technical")
+        ET.SubElement(tech, "string").text = str(string_num)
+        ET.SubElement(tech, "fret").text = str(fret_num)
+
+
+def _add_score_part(part_list: ET.Element, part_key: str, pid: str, pname: str, pabbr: str,
+                    ptype: str, data: list, channel: int):
+    """Declares a part with its playback instrument(s); drum parts declare one per kit piece."""
+    score_part = ET.SubElement(part_list, "score-part", id=pid)
+    ET.SubElement(score_part, "part-name").text = pname
+    ET.SubElement(score_part, "part-abbreviation").text = pabbr
+
+    if ptype == "drum":
+        pieces = sorted({n.pitch for n in data})
+        for pitch in pieces:
+            inst = ET.SubElement(score_part, "score-instrument", id=f"{pid}-I{pitch}")
+            ET.SubElement(inst, "instrument-name").text = DRUM_NOTATION.get(pitch, (None, None, None, f"Percussion {pitch}"))[3]
+        for pitch in pieces:
+            midi = ET.SubElement(score_part, "midi-instrument", id=f"{pid}-I{pitch}")
+            ET.SubElement(midi, "midi-channel").text = "10"
+            ET.SubElement(midi, "midi-unpitched").text = str(pitch + 1)
+    else:
+        sound_name, program = PART_SOUNDS[part_key]
+        inst = ET.SubElement(score_part, "score-instrument", id=f"{pid}-I1")
+        ET.SubElement(inst, "instrument-name").text = sound_name
+        midi = ET.SubElement(score_part, "midi-instrument", id=f"{pid}-I1")
+        ET.SubElement(midi, "midi-channel").text = str(channel)
+        ET.SubElement(midi, "midi-program").text = str(program)
+
+
+def _add_first_measure_attributes(measure_el: ET.Element, ptype: str, divisions: int,
+                                  fifths: int, mode: str):
+    attrib = ET.SubElement(measure_el, "attributes")
+    ET.SubElement(attrib, "divisions").text = str(divisions)
+
+    key_el = ET.SubElement(attrib, "key")
+    ET.SubElement(key_el, "fifths").text = "0" if ptype == "drum" else str(fifths)
+    if ptype != "drum":
+        ET.SubElement(key_el, "mode").text = mode
+
+    time_el = ET.SubElement(attrib, "time")
+    ET.SubElement(time_el, "beats").text = "4"
+    ET.SubElement(time_el, "beat-type").text = "4"
+
+    clef = ET.SubElement(attrib, "clef")
+    if ptype == "drum":
+        ET.SubElement(clef, "sign").text = "percussion"
+        ET.SubElement(clef, "line").text = "2"
+        return
+
+    # Guitar and bass sound an octave below written pitch: treble 8vb / bass 8vb
+    ET.SubElement(clef, "sign").text = "F" if ptype == "bass" else "G"
+    ET.SubElement(clef, "line").text = "4" if ptype == "bass" else "2"
+    ET.SubElement(clef, "clef-octave-change").text = "-1"
+
+    # String tuning, so notation programs read each note's string/fret correctly
+    # (line 1 is the lowest string)
+    tuning = BASS_TUNING if ptype == "bass" else GUITAR_TUNING
+    details = ET.SubElement(attrib, "staff-details")
+    for line_no in range(1, len(tuning) + 1):
+        step, alter, octave = spell_pitch(tuning[len(tuning) - line_no + 1])
+        staff_tuning = ET.SubElement(details, "staff-tuning", line=str(line_no))
+        ET.SubElement(staff_tuning, "tuning-step").text = step
+        if alter:
+            ET.SubElement(staff_tuning, "tuning-alter").text = str(alter)
+        ET.SubElement(staff_tuning, "tuning-octave").text = str(octave)
+
+
+def _add_tempo(measure_el: ET.Element, bpm: float):
+    direction = ET.SubElement(measure_el, "direction", placement="above")
+    direction_type = ET.SubElement(direction, "direction-type")
+    metronome = ET.SubElement(direction_type, "metronome")
+    ET.SubElement(metronome, "beat-unit").text = "quarter"
+    ET.SubElement(metronome, "per-minute").text = str(int(round(bpm)))
+    ET.SubElement(direction, "sound", tempo=f"{bpm:.2f}")
+
+
 def build_musicxml_score(
     drum_midi_path: str,
     bass_midi_path: str,
@@ -345,6 +527,9 @@ def build_musicxml_score(
     lead_tab = optimize_tablature(lead_notes, GUITAR_TUNING, max_fret=22) if 'lead' in selected_parts else []
     rhythm_tab = optimize_tablature(rhythm_notes, GUITAR_TUNING, max_fret=16) if 'rhythm' in selected_parts else []
 
+    # One key signature for all pitched parts
+    fifths, mode = estimate_key([n for n, _, _ in bass_tab + lead_tab + rhythm_tab])
+
     # Construct clean MusicXML DOM
     score = ET.Element("score-partwise", version="3.1")
     
@@ -362,17 +547,13 @@ def build_musicxml_score(
         ("rhythm", "P3", "Rhythm Guitar", "Rhythm", rhythm_tab, "guitar"),
         ("lead", "P4", "Lead Guitar", "Lead", lead_tab, "guitar")
     ]
-    parts_info = [p[1:] for p in available_parts if p[0] in selected_parts]
+    parts_info = [p for p in available_parts if p[0] in selected_parts]
     if not parts_info:
         # Fallback to lead if all deselected
-        parts_info = [available_parts[3][1:]]
+        parts_info = [available_parts[3]]
     
-    for pid, pname, pabbr, data, ptype in parts_info:
-        score_part = ET.SubElement(part_list, "score-part", id=pid)
-        name_el = ET.SubElement(score_part, "part-name")
-        name_el.text = pname
-        abbr_el = ET.SubElement(score_part, "part-abbreviation")
-        abbr_el.text = pabbr
+    for channel, (part_key, pid, pname, pabbr, data, ptype) in enumerate(parts_info, start=1):
+        _add_score_part(part_list, part_key, pid, pname, pabbr, ptype, data, channel)
 
     # Metric & Tempo setup
     bpm = max(45.0, min(240.0, float(bpm)))
@@ -384,7 +565,7 @@ def build_musicxml_score(
     # Snap every part onto one global 16th-note grid, then split it into bars
     part_events = []
     last_slot = int(round(2.0 / seconds_per_div))  # at least ~2 s of score
-    for pid, pname, pabbr, data, ptype in parts_info:
+    for part_key, pid, pname, pabbr, data, ptype in parts_info:
         items = [(n, None, None) for n in data] if ptype == "drum" else data
         events = quantize_onsets(items, seconds_per_div, merge_same_slot=(ptype == "drum"))
         for slot, _, dur in events:
@@ -393,10 +574,9 @@ def build_musicxml_score(
 
     total_bars = int(np.ceil(last_slot / bar_divisions)) + 1
 
-    pitch_names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
-
-    for (pid, pname, pabbr, data, ptype), events in zip(parts_info, part_events):
+    for part_idx, ((part_key, pid, pname, pabbr, data, ptype), events) in enumerate(zip(parts_info, part_events)):
         part_el = ET.SubElement(score, "part", id=pid)
+        drum_part_id = pid if ptype == "drum" else None
 
         events_by_bar = [[] for _ in range(total_bars + 1)]
         for slot, slot_items, dur in events:
@@ -405,93 +585,38 @@ def build_musicxml_score(
         for bar_num in range(1, total_bars + 1):
             measure_el = ET.SubElement(part_el, "measure", number=str(bar_num))
 
-            # Attributes on bar 1
             if bar_num == 1:
-                attrib = ET.SubElement(measure_el, "attributes")
-                ET.SubElement(attrib, "divisions").text = str(divisions)
-                
-                key_el = ET.SubElement(attrib, "key")
-                ET.SubElement(key_el, "fifths").text = "0"
-                
-                time_el = ET.SubElement(attrib, "time")
-                ET.SubElement(time_el, "beats").text = "4"
-                ET.SubElement(time_el, "beat-type").text = "4"
-                
-                clef = ET.SubElement(attrib, "clef")
-                sign = ET.SubElement(clef, "sign")
-                line = ET.SubElement(clef, "line")
-                if ptype == "drum":
-                    sign.text = "percussion"
-                    line.text = "2"
-                elif ptype == "bass":
-                    sign.text = "F"
-                    line.text = "4"
-                else:
-                    sign.text = "G"
-                    line.text = "2"
+                _add_first_measure_attributes(measure_el, ptype, divisions, fifths, mode)
+                if part_idx == 0:
+                    _add_tempo(measure_el, bpm)
 
             bar_events = events_by_bar[bar_num]
             if not bar_events:
                 # Whole measure rest
-                note_el = ET.SubElement(measure_el, "note")
-                ET.SubElement(note_el, "rest")
-                ET.SubElement(note_el, "duration").text = str(bar_divisions)
-                ET.SubElement(note_el, "voice").text = "1"
-                add_type_and_dot(note_el, bar_divisions)
-            else:
-                cursor = 0
+                _append_rests(measure_el, bar_divisions)
+                continue
 
-                for i, (slot, slot_items, raw_slot_dur) in enumerate(bar_events):
-                    # Fill rest gap before this note slot using standard rest durations
-                    if slot > cursor:
-                        gap_dur = slot - cursor
-                        for chunk in decompose_duration(gap_dur):
-                            r_note = ET.SubElement(measure_el, "note")
-                            ET.SubElement(r_note, "rest")
-                            ET.SubElement(r_note, "duration").text = str(chunk)
-                            ET.SubElement(r_note, "voice").text = "1"
-                            add_type_and_dot(r_note, chunk)
-                        cursor = slot
+            cursor = 0
+            for i, (slot, slot_items, raw_slot_dur) in enumerate(bar_events):
+                # Fill rest gap before this note slot using standard rest durations
+                if slot > cursor:
+                    _append_rests(measure_el, slot - cursor)
+                    cursor = slot
 
-                    # Determine note duration strictly bounded by next slot or end of bar
-                    next_slot = bar_events[i + 1][0] if (i + 1 < len(bar_events)) else bar_divisions
-                    max_allowed = max(1, next_slot - slot)
-                    slot_dur = min(max_allowed, raw_slot_dur)
+                # Determine note duration strictly bounded by next slot or end of bar
+                next_slot = bar_events[i + 1][0] if (i + 1 < len(bar_events)) else bar_divisions
+                max_allowed = max(1, next_slot - slot)
+                slot_dur = min(max_allowed, raw_slot_dur)
 
-                    for idx, (n_obj, s_num, f_num) in enumerate(slot_items):
-                        n_el = ET.SubElement(measure_el, "note")
-                        if idx > 0:
-                            ET.SubElement(n_el, "chord")
+                for idx, (n_obj, s_num, f_num) in enumerate(slot_items):
+                    _append_note(measure_el, n_obj, s_num, f_num, slot_dur, chord=idx > 0,
+                                 fifths=fifths, drum_part_id=drum_part_id)
 
-                        pitch_el = ET.SubElement(n_el, "pitch")
-                        p_name = pitch_names[n_obj.pitch % 12]
-                        ET.SubElement(pitch_el, "step").text = p_name[0]
-                        if len(p_name) > 1:
-                            ET.SubElement(pitch_el, "alter").text = "1"
-                        ET.SubElement(pitch_el, "octave").text = str(n_obj.pitch // 12 - 1)
+                cursor += slot_dur
 
-                        ET.SubElement(n_el, "duration").text = str(slot_dur)
-                        ET.SubElement(n_el, "voice").text = "1"
-                        add_type_and_dot(n_el, slot_dur)
-
-                        # Tablature notation for string & fret
-                        if s_num is not None and f_num is not None:
-                            notations = ET.SubElement(n_el, "notations")
-                            tech = ET.SubElement(notations, "technical")
-                            ET.SubElement(tech, "string").text = str(s_num)
-                            ET.SubElement(tech, "fret").text = str(f_num)
-
-                    cursor += slot_dur
-
-                # Fill trailing rest if measure is not full using standard rest durations
-                if cursor < bar_divisions:
-                    trail_dur = bar_divisions - cursor
-                    for chunk in decompose_duration(trail_dur):
-                        r_note = ET.SubElement(measure_el, "note")
-                        ET.SubElement(r_note, "rest")
-                        ET.SubElement(r_note, "duration").text = str(chunk)
-                        ET.SubElement(r_note, "voice").text = "1"
-                        add_type_and_dot(r_note, chunk)
+            # Fill trailing rest if measure is not full using standard rest durations
+            if cursor < bar_divisions:
+                _append_rests(measure_el, bar_divisions - cursor)
 
     tree = ET.ElementTree(score)
     ET.indent(tree, space="  ", level=0)

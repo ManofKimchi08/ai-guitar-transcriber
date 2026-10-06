@@ -16,7 +16,10 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from src.guitar_splitter import split_guitar_track
 from src.drum_transcriber import transcribe_drums
 from src.tab_builder import optimize_tablature, build_musicxml_score, assign_chord_strings, quantize_onsets, GUITAR_TUNING, BASS_TUNING
+from src.tab_builder import estimate_key
 from src.chord_recognizer import STANDARD_VOICINGS
+from src.pdf_exporter import convert_ly_to_tab_style
+from src.fretboard_editor import ScoreFretEditor
 
 
 class TestBandTranscriber(unittest.TestCase):
@@ -203,6 +206,92 @@ class TestBandTranscriber(unittest.TestCase):
         played = [n for n in first.findall("note") if n.find("rest") is None]
         self.assertEqual(len(played), 2)
         self.assertIsNotNone(played[1].find("chord"))
+
+    def test_key_estimation(self):
+        def scale(pitches, weights=None):
+            weights = weights or [1.0] * len(pitches)
+            notes, t = [], 0.0
+            for p, w in zip(pitches, weights):
+                notes.append(pretty_midi.Note(velocity=80, pitch=p, start=t, end=t + w))
+                t += w
+            return notes
+
+        self.assertEqual(estimate_key(scale([60, 62, 64, 65, 67, 69, 71], [3, 1, 2, 1, 3, 1, 1]))[0], 0)    # C major
+        self.assertEqual(estimate_key(scale([65, 67, 69, 70, 72, 74, 76], [3, 1, 2, 1, 3, 1, 1]))[0], -1)   # F major
+        self.assertEqual(estimate_key(scale([64, 66, 67, 69, 71, 72, 74], [3, 1, 2, 1, 3, 1, 1])), (1, "minor"))  # E minor
+        self.assertEqual(estimate_key([])[0], 0)
+
+    def test_score_notation_details(self):
+        """Tempo, octave clefs, string tuning, drum notation and flat spelling."""
+        def write(name, notes, drum=False):
+            pm = pretty_midi.PrettyMIDI()
+            inst = pretty_midi.Instrument(program=0, is_drum=drum)
+            inst.notes = notes
+            pm.instruments.append(inst)
+            path = os.path.join(self.test_dir, name)
+            pm.write(path)
+            return path
+
+        N = pretty_midi.Note
+        drums = write("nd.mid", [N(100, 36, 0.0, 0.1), N(100, 42, 0.0, 0.1), N(100, 38, 0.5, 0.6)], drum=True)
+        bass = write("nb.mid", [N(90, 29, i * 0.5, i * 0.5 + 0.4) for i in range(4)])  # F1
+        lead = write("nl.mid", [N(90, p, i * 0.5, i * 0.5 + 0.4) for i, p in enumerate([65, 70, 69, 65, 72, 70])])  # F major, with Bb
+        xml_out = os.path.join(self.test_dir, "test_notation.musicxml")
+        build_musicxml_score(drums, bass, lead, "", xml_out, selected_parts=["drums", "bass", "lead"], bpm=97.0)
+        root = ET.parse(xml_out).getroot()
+
+        # Tempo once, in the first part
+        self.assertEqual(len(root.findall(".//direction/sound[@tempo]")), 1)
+        self.assertEqual(root.find("./part[@id='P1']//metronome/per-minute").text, "97")
+
+        # Guitar/bass: octave clef and one staff-tuning line per string, lowest string on line 1
+        for pid, strings, lowest in (("P2", 4, ("E", "1")), ("P4", 6, ("E", "2"))):
+            attrs = root.find(f"./part[@id='{pid}']/measure/attributes")
+            self.assertEqual(attrs.findtext("clef/clef-octave-change"), "-1")
+            tunings = attrs.findall("staff-details/staff-tuning")
+            self.assertEqual(len(tunings), strings)
+            line1 = attrs.find("staff-details/staff-tuning[@line='1']")
+            self.assertEqual((line1.findtext("tuning-step"), line1.findtext("tuning-octave")), lowest)
+
+        # Flat key: Bb is spelled B-flat, not A-sharp
+        self.assertEqual(root.find("./part[@id='P4']/measure/attributes/key/fifths").text, "-1")
+        steps = {(p.findtext("step"), p.findtext("alter")) for p in root.findall("./part[@id='P4']//pitch")}
+        self.assertIn(("B", "-1"), steps)
+        self.assertNotIn(("A", "1"), steps)
+
+        # Drums: unpitched kit pieces that point at declared instruments; hi-hat as x
+        declared = {i.get("id") for i in root.findall("./part-list/score-part[@id='P1']/score-instrument")}
+        drum_notes = [n for n in root.findall("./part[@id='P1']//note") if n.find("rest") is None]
+        self.assertTrue(all(n.find("unpitched") is not None for n in drum_notes))
+        self.assertTrue(all(n.find("instrument").get("id") in declared for n in drum_notes))
+        hihat = next(n for n in drum_notes if n.find("instrument").get("id") == "P1-I42")
+        self.assertEqual((hihat.findtext("unpitched/display-step"), hihat.findtext("notehead")), ("G", "x"))
+
+        # The fretboard editor offers only string instruments
+        self.assertEqual([p["id"] for p in ScoreFretEditor(xml_out).parts], ["P2", "P4"])
+
+    def test_lilypond_drums_and_tab_clefs(self):
+        ly = (
+            'PartPOneVoiceOne =  \\relative f\' {\n'
+            '    \\clef "percussion" \\time 4/4 f4 \\tempo 4=120 g\'\'4 }\n'
+            'PartPTwoVoiceOne =  \\relative e,, {\n'
+            '    \\tempo 4=120 \\clef "bass_8" \\key g \\major e4 e4\n'
+            '    }\n'
+            '\\score {\n'
+            '        \\new DrumStaff\n'
+            '        <<\n'
+            '            \\set DrumStaff.instrumentName = "Drums"\n'
+            '            \\context DrumVoice = "PartPOneVoiceOne" {  \\PartPOneVoiceOne }\n'
+            '            >>\n'
+            '    }\n'
+        )
+        out = convert_ly_to_tab_style(ly, style="tab")
+        self.assertNotIn("DrumStaff", out)
+        self.assertNotIn("DrumVoice", out)
+        self.assertIn('clefs.percussion', out)
+        # The bass clef is removed even when it does not directly follow the opening brace
+        bass_def = out[out.index("PartPTwoVoiceOne ="):out.index("\\score")]
+        self.assertNotIn("\\clef", bass_def)
 
 
 if __name__ == "__main__":

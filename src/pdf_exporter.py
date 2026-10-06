@@ -53,6 +53,13 @@ def find_lilypond():
     return None, None, None
 
 
+# Percussion clef glyph with treble-clef note positions (MusicXML drum display positions)
+PERCUSSION_CLEF = (
+    '\\set Staff.clefGlyph = #"clefs.percussion" \\set Staff.clefPosition = #0 '
+    '\\set Staff.middleCPosition = #-6 \\set Staff.middleCClefPosition = #-6'
+)
+
+
 def convert_ly_to_tab_style(ly_content: str, style: str = "tab") -> str:
     """
     Transforms LilyPond Staff contexts into genuine Guitar & Bass TabStaff
@@ -65,14 +72,24 @@ def convert_ly_to_tab_style(ly_content: str, style: str = "tab") -> str:
     # which crashes LilyPond's Guile interpreter with: Wrong type (expecting exact integer): ()
     ly_content = re.sub(r'([rRs]\d*[\.*]*(?:\*\d+)?)(?:\s*\\[0-9]+)+', r'\1', ly_content)
 
+    # Drums: LilyPond's DrumStaff only places \drummode notes, so musicxml2ly's
+    # unpitched notes would all land on the middle line. Draw the drum voice on a
+    # plain staff with the percussion clef glyph and treble-clef note positions.
+    ly_content = ly_content.replace("\\new DrumStaff", "\\new Staff")
+    ly_content = ly_content.replace("\\set DrumStaff.", "\\set Staff.")
+    ly_content = ly_content.replace("\\context DrumStaff", "\\context Staff")
+    ly_content = ly_content.replace("\\context DrumVoice", "\\context Voice")
+    ly_content = ly_content.replace('\\clef "percussion"', PERCUSSION_CLEF)
+
     if style == "standard":
         return ly_content
 
-    # 2. Strip \clef "treble" and \clef "bass" from instrument voices P2, P3, P4
-    # so LilyPond doesn't force a 5-line musical notation staff inside the TabStaff
+    # 2. Strip every \clef (e.g. "treble_8", "bass_8") from instrument voices P2, P3, P4
+    # so LilyPond doesn't force a 5-line musical notation staff inside the TabStaff.
+    # A voice definition runs until the next unindented line (next definition or \score).
     for part in ["PartPTwoVoiceOne", "PartPThreeVoiceOne", "PartPFourVoiceOne"]:
-        pattern = re.compile(rf'({part}\s*=\s*\\relative\s+[^\{{]+\{{\s*)\\clef\s+"[^"]+"\s*', re.DOTALL)
-        ly_content = pattern.sub(r'\1', ly_content)
+        pattern = re.compile(rf'^{part}\s*=.*?(?=^\S)', re.DOTALL | re.MULTILINE)
+        ly_content = pattern.sub(lambda m: re.sub(r'\\clef\s+"[^"]+"\s*', '', m.group(0)), ly_content)
 
     if style == "both":
         # Both: Paired Standard 5-line Staff + 6-line/4-line TabStaff
@@ -81,7 +98,7 @@ def convert_ly_to_tab_style(ly_content: str, style: str = "tab") -> str:
             '        <<\n'
             '            \\set Staff.instrumentName = "Bass"\n'
             '            \\set Staff.shortInstrumentName = "Ba."\n'
-            '            \\context Voice = "PartPTwoVoiceOne" { \\clef "bass" \\PartPTwoVoiceOne }\n'
+            '            \\context Voice = "PartPTwoVoiceOne" { \\clef "bass_8" \\PartPTwoVoiceOne }\n'
             '        >>\n'
             '        \\new TabStaff \\with { stringTunings = #bass-tuning }\n'
             '        <<\n'
@@ -95,7 +112,7 @@ def convert_ly_to_tab_style(ly_content: str, style: str = "tab") -> str:
             '        <<\n'
             '            \\set Staff.instrumentName = "Rhythm Guitar"\n'
             '            \\set Staff.shortInstrumentName = "Rhy."\n'
-            '            \\context Voice = "PartPThreeVoiceOne" { \\clef "treble" \\PartPThreeVoiceOne }\n'
+            '            \\context Voice = "PartPThreeVoiceOne" { \\clef "treble_8" \\PartPThreeVoiceOne }\n'
             '        >>\n'
             '        \\new TabStaff \\with { stringTunings = #guitar-tuning }\n'
             '        <<\n'
@@ -109,7 +126,7 @@ def convert_ly_to_tab_style(ly_content: str, style: str = "tab") -> str:
             '        <<\n'
             '            \\set Staff.instrumentName = "Lead Guitar"\n'
             '            \\set Staff.shortInstrumentName = "Lead"\n'
-            '            \\context Voice = "PartPFourVoiceOne" { \\clef "treble" \\PartPFourVoiceOne }\n'
+            '            \\context Voice = "PartPFourVoiceOne" { \\clef "treble_8" \\PartPFourVoiceOne }\n'
             '        >>\n'
             '        \\new TabStaff \\with { stringTunings = #guitar-tuning }\n'
             '        <<\n'
