@@ -115,6 +115,7 @@ An end-to-end AI music transcription suite that isolates band instruments (Drums
 - **TorchCREPE 심층 신경망**: 360-bin Viterbi 디코딩으로 저음역(베이스) 및 고음역(기타 솔로)의 옥타브 건너뜀(Octave Jump)과 고스트 노트를 완벽 차단.
 - **CQT Chroma 기타 코드 인식**: 리듬 기타 트랙의 CQT 스펙트로그램으로부터 표준 6현 기타 코드 보이싱(Open/Barre Voicing)을 자동 매핑.
 - **충돌 방지(Collision-free) 현 할당**: 화음 구성음 간 동일 줄 충돌을 자동 회피하여 실제 연주 가능한 타브 운지 계산.
+- **드럼 분류**: 주파수 대역별 어택(음량이 급히 오르는 순간)으로 킥·스네어·클로즈/오픈 하이햇·크래시를 구분합니다. 약하게 친 타격도 잡고, 울리는 심벌 아래의 스네어, 다른 악기 소리가 섞인 경우도 견딥니다 (합성 비트 기준 F1 0.98, 타이밍 오차 ±20ms 이내).
 
 ### 3. 🎸 실시간 인터랙티브 프렛보드 에디터 (`src/fretboard_gui.py`)
 - **22프렛 가상 기타/베이스 지판 제공**: 마디 및 음표 선택 시 지판 위에 현재 위치 및 모든 대안 운지(동음이현)가 하이라이트.
@@ -173,7 +174,7 @@ winget install Musescore.Musescore
    - `오선보만 (Notation)`: 일반 5선 음표 악보
    - `둘 다 생성 (TAB + 오선보)`: 상단 오선보와 하단 타브 악보가 쌍으로 표기된 마스터 총보
 2. **생성할 악기 파트 선택 (체크박스)**:
-   - 🥁 **드럼**: 킥/스네어/하이햇 비트 악보
+   - 🥁 **드럼**: 킥/스네어/하이햇(클로즈·오픈)/크래시 비트 악보
    - 🎸 **베이스**: 저음역 4현 타브 악보
    - 🎸 **리듬 기타**: 백킹 코드 화음 6현 타브 악보
    - 🎸 **리드 기타**: 멜로디 및 솔로 6현 타브 악보
@@ -287,7 +288,7 @@ ai_band_transcriber/
 │   ├── guitar_splitter.py     # M/S 기반 Lead / Rhythm 기타 분리
 │   ├── pitch_transcriber.py   # TorchCREPE GPU 고정밀 F0 피치 트래커
 │   ├── chord_recognizer.py    # CQT 크로마 기반 기타 코드 인식기
-│   ├── drum_transcriber.py    # 스펙트럴 플럭스 드럼 트랜스크라이버
+│   ├── drum_transcriber.py    # 대역별 어택 기반 드럼 트랜스크라이버 (킥/스네어/하이햇/크래시)
 │   ├── tab_builder.py         # 충돌 회피 알고리즘 기반 타브 악보 빌더
 │   ├── fretboard_editor.py    # MusicXML DOM 운지 변경 및 동음이현 탐색기
 │   ├── fretboard_gui.py       # 22프렛 가상 프렛보드 인터랙티브 GUI
