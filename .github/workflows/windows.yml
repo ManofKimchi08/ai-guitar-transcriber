@@ -1,0 +1,50 @@
+# Checks on a Windows machine what this Linux-only development cannot: that start.bat
+# installs everything, that the tests pass there, and builds the launcher exe from
+# Launcher.cs (download it from the run's "Artifacts"). GitHub's runners have no GPU,
+# so start.bat's CUDA PyTorch installs but runs on the CPU.
+name: Windows
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  install-and-test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install with start.bat
+        shell: cmd
+        timeout-minutes: 45
+        # The piped key answers start.bat's "pause" if a step fails
+        run: echo.| start.bat
+      - name: Import the GUI
+        shell: cmd
+        run: venv\Scripts\python.exe -c "import app_gui"
+      - name: Tests
+        shell: cmd
+        run: |
+          venv\Scripts\python.exe -m pip install pytest
+          venv\Scripts\python.exe -m pytest tests -q
+
+  launcher:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build AI_Band_Transcriber.exe with build_launcher.bat
+        shell: cmd
+        run: echo.| build_launcher.bat
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AI_Band_Transcriber
+          path: AI_Band_Transcriber.exe

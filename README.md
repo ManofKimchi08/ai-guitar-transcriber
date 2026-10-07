@@ -289,6 +289,7 @@ ai_band_transcriber/
 ├── run_gui.bat                # 가상환경 배치 실행 스크립트
 ├── Launcher.cs                # 런처 C# 소스 코드
 ├── build_launcher.bat         # Launcher.cs → AI_Band_Transcriber.exe 재빌드 (Windows 기본 C# 컴파일러 사용)
+├── .github/workflows/windows.yml  # push마다 Windows에서 start.bat 설치·테스트 확인, 런처 exe 빌드 (Actions 탭 Artifacts에서 다운로드)
 ├── app_gui.py                 # CustomTkinter 반응형 다크모드 메인 GUI
 ├── main.py                    # CLI 진입점 (src/pipeline.py 호출)
 ├── requirements.txt           # Python 필수 라이브러리 목록
