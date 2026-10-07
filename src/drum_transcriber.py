@@ -28,6 +28,8 @@ AUDIBLE_DB = 50.0         # ...and no lower than this below the whole track's lo
 # and the attack frame is the last one before the rise: the hit itself is this much later
 ATTACK_DELAY_SEC = 0.015
 PEAK_FRAMES = 10          # a band's level peaks within 50 ms of the attack (low bands rise slowly)
+HAT_UNDER_RING_DB = 3.0    # a hat under a ringing cymbal raises the high band at least this much...
+HAT_OWN_RISE_DB = 2.0      # ...this much more than it raises 3-6 kHz
 OPEN_FADE_DB = 10.0       # an open hat fades slower than this (dB per 100 ms); a closed one ~40
 CRASH_FADE_DB = 6.0       # ...and a crash slower still
 
@@ -176,10 +178,16 @@ def transcribe_drums(drum_wav_path: str, output_midi_path: str) -> str:
     for attack, f in snare_hits:
         add(38, attack, 0.12, velocity(wires, f))
 
-    # Hi-hats and cymbals. A hat under a ringing cymbal adds only a few dB, hence the
-    # lower rise threshold. Kinds: crash = loud, spreads into 3-6 kHz and keeps ringing;
-    # open hat = keeps ringing; closed hat = dies within ~100 ms.
-    cym_hits = hits_in(high, -25.0, min_gap_sec=0.06, rise_db=5.0)
+    # Hi-hats and cymbals. A hat under a ringing cymbal adds only a few dB: a smaller
+    # rise counts when it is the high band's own (a crash's shimmer swells 3-6 kHz along
+    # with it, a hat on top of the ring does not). Kinds: crash = loud, spreads into
+    # 3-6 kHz and keeps ringing; open hat = keeps ringing; closed hat = dies within ~100 ms.
+    def steepest_rise(level, a, f):
+        return max(level[i] - level[i - RISE_FRAMES] for i in range(max(a, RISE_FRAMES), f + 1))
+
+    cym_hits = [(a, f) for a, f in hits_in(high, -25.0, min_gap_sec=0.06, rise_db=HAT_UNDER_RING_DB)
+                if steepest_rise(high, a, f) >= 5.0
+                or (high[f] - high[a]) - (mid_high[f] - mid_high[a]) >= HAT_OWN_RISE_DB]
     for k, (attack, f) in enumerate(cym_hits):
         spread = mid_high[f] - high[f]
         if _near(snare_hits, f, 4) and spread > -3.0 and very_high[f] - wires[f] < -12.0:
