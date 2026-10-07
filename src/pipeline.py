@@ -14,6 +14,7 @@ from src.guitar_splitter import split_guitar_track
 from src.drum_transcriber import transcribe_drums
 from src.pitch_transcriber import transcribe_pitch
 from src.tab_builder import build_musicxml_score
+from src.beat_map import analyze_beat_map
 from src.youtube_downloader import download_youtube_audio
 from src.pdf_exporter import export_score_to_pdf
 
@@ -54,80 +55,9 @@ def is_url(text: str) -> bool:
 
 
 def analyze_beats(audio_path: str, default_bpm: float = 120.0) -> tuple:
-    """
-    Estimates (bpm, downbeat_seconds) for a 4/4 song.
-
-    The tempo and beat phase come from a least-squares fit through all tracked
-    beats, which is far finer than the beat tracker's ~23 ms frames (a 1% tempo
-    error would drift the bar lines by ~0.3 s over 12 bars). Tempos below 75 BPM
-    are taken as half-time tracking and doubled. The downbeat is the beat
-    position (of 4) where low-frequency attacks (kick, bass) and chord changes
-    are strongest on average.
-    """
-    import numpy as np
-    import librosa
-    try:
-        y, sr = librosa.load(audio_path, sr=22050, mono=True, duration=600.0)
-        tempo, beat_frames = librosa.beat.beat_track(y=y, sr=sr)
-        beats = librosa.frames_to_time(beat_frames, sr=sr)
-    except Exception:
-        return default_bpm, 0.0
-    if len(beats) < 8:
-        bpm = float(np.atleast_1d(tempo)[0]) if np.size(tempo) else default_bpm
-        return (bpm if 50 <= bpm <= 220 else default_bpm), 0.0
-
-    # Number the beats interval by interval (a skipped beat counts as two), then fit
-    # time = offset + period * n, dropping beats that sit far off the fitted grid.
-    # Numbering from the first beat with one rough period would slip by a beat once
-    # its small error accumulates (librosa's intervals often alternate by a frame).
-    intervals = np.diff(beats)
-    period = float(np.median(intervals))
-    numbers = np.concatenate([[0.0], np.cumsum(np.maximum(1.0, np.round(intervals / period)))])
-    keep = np.ones(len(beats), dtype=bool)
-    for _ in range(2):
-        period, offset = np.polyfit(numbers[keep], beats[keep], 1)
-        keep = np.abs(beats - (offset + period * numbers)) < period / 4
-        if keep.sum() < 8:
-            keep[:] = True
-            break
-    period, offset = np.polyfit(numbers[keep], beats[keep], 1)
-
-    bpm = 60.0 / period
-    if bpm > 220:  # tracked eighth notes: count every other one as the beat
-        period *= 2.0
-    elif bpm < 75:  # half-time tracking: the real beat falls in between
-        period /= 2.0
-    bpm = 60.0 / period
-    if not 50 <= bpm <= 220:
-        return default_bpm, 0.0
-
-    phase = offset % period
-    # At slow tempos the tracker may follow every other beat (160 BPM tracked as 80,
-    # on beats 2 and 4) or the off-beats; either way the bar can start between
-    # tracked beats, so look for the downbeat on half-beats as well.
-    half_time_suspect = bpm < 100
-    step = period / 2 if half_time_suspect else period
-    positions = 8 if half_time_suspect else 4
-    grid = np.arange(phase, len(y) / sr, step)
-    if len(grid) < 2 * positions:
-        return bpm, float(phase)
-
-    frames = librosa.time_to_frames(grid, sr=sr)
-    low_onsets = librosa.onset.onset_strength(y=y, sr=sr, fmax=200, n_mels=8)
-    low = low_onsets[np.clip(frames, 0, len(low_onsets) - 1)]
-
-    chroma = librosa.feature.chroma_stft(y=y, sr=sr)
-    bounds = list(np.clip(frames, 0, chroma.shape[1] - 1)) + [chroma.shape[1]]
-    beat_chroma = np.stack([chroma[:, a:max(b, a + 1)].mean(axis=1) for a, b in zip(bounds[:-1], bounds[1:])])
-    unit = beat_chroma / (np.linalg.norm(beat_chroma, axis=1, keepdims=True) + 1e-9)
-    change = np.concatenate([[0.0], 1.0 - np.sum(unit[1:] * unit[:-1], axis=1)])
-
-    def zscore(x):
-        return (x - x.mean()) / (x.std() + 1e-9)
-
-    evidence = zscore(low) + zscore(change)
-    position = int(np.argmax([evidence[j::positions].mean() for j in range(positions)]))
-    return bpm, float(grid[position])
+    """(average bpm, time of a downbeat) of a 4/4 song; see src.beat_map for the full beat map."""
+    beat_map = analyze_beat_map(audio_path, default_bpm)
+    return beat_map["bpm"], beat_map["downbeat"]
 
 
 def recognize_lyrics(vocals_wav: str, vocal_midi: str, vram_profile: dict, language: str,
@@ -338,8 +268,9 @@ def run_pipeline(
     progress("4/4 단계: 프렛보드 운지 최적화 및 맞춤 악보(MusicXML/PDF) 생성 중...", 0.90)
     log("\n--- [Step 4] 동적 계획법(DP) 타브 운지 최적화 & 조판 ---")
 
-    bpm, downbeat = analyze_beats(input_path)
-    log(f"  ✓ 곡 템포 자동 분석: {bpm:.1f} BPM, 첫 강박 {downbeat:.2f}초 (마디선 정렬)")
+    beat_map = analyze_beat_map(input_path)
+    bpm, downbeat = beat_map["bpm"], beat_map["downbeat"]
+    log(f"  ✓ 곡 템포 자동 분석: 평균 {bpm:.1f} BPM, 첫 강박 {downbeat:.2f}초 (마디선이 박을 따라감)")
 
     part_suffix = "" if sorted(selected_parts) == sorted(DEFAULT_PARTS) else f"_{'_'.join(selected_parts)}"
     score_xml = os.path.join(score_dir, f"{song_title}{part_suffix}_score.musicxml")
@@ -353,6 +284,7 @@ def run_pipeline(
         selected_parts=selected_parts,
         bpm=bpm,
         downbeat=downbeat,
+        beats=beat_map["beats"],
         vocal_midi_path=midi_paths.get("vocals", ""),
         lyrics=vocal_lyrics
     )

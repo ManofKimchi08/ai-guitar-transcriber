@@ -12,6 +12,8 @@ import numpy as np
 import pretty_midi
 import xml.etree.ElementTree as ET
 
+from src.beat_map import constant_beats
+
 
 # Tuning definitions (String number 1 is highest pitch, highest number is lowest pitch)
 GUITAR_TUNING = {
@@ -98,6 +100,8 @@ def estimate_key(notes: list) -> tuple:
 DIVISIONS = 8
 BAR_DIVISIONS = 32
 SIXTEENTH = 2  # divisions per 16th note
+BEATS_PER_BAR = 4
+TEMPO_CHANGE = 0.03  # a bar this much faster or slower than playback so far gets its own tempo
 
 # MusicXML standard durations, in divisions
 DURATION_TO_TYPE = {
@@ -334,11 +338,13 @@ def optimize_tablature(notes: list, tuning: dict, max_fret: int = 22) -> list:
     return optimal_path
 
 
-def quantize_onsets(items: list, seconds_per_div: float, merge_same_slot: bool = False,
-                    onset_tol: float = 0.035, origin: float = 0.0, coarse: int = SIXTEENTH) -> list:
+def quantize_onsets(items: list, seconds_per_div: float = None, merge_same_slot: bool = False,
+                    onset_tol: float = 0.035, origin: float = 0.0, coarse: int = SIXTEENTH,
+                    to_grid=None) -> list:
     """
-    Snaps (note, string, fret) items onto a global grid of `seconds_per_div` slots
-    (32nd notes) starting at time `origin` (slot 0, the first beat of bar 1).
+    Snaps (note, string, fret) items onto a global grid of 32nd-note slots, slot 0 being
+    the first beat of bar 1: `to_grid(seconds)` gives the (fractional) slot along the
+    song's beat map, or slots are `seconds_per_div` long from time `origin`.
     Returns [(slot, [items...], dur_in_divs), ...] with strictly increasing slots.
 
     Notes are written on the `coarse` grid (16ths, so timing jitter does not scatter
@@ -367,7 +373,10 @@ def quantize_onsets(items: list, seconds_per_div: float, merge_same_slot: bool =
                     kept.append(it)
             groups[k] = kept
 
-    positions = [(g[0][0].start - origin) / seconds_per_div for g in groups]
+    if to_grid is None:
+        def to_grid(t):
+            return (t - origin) / seconds_per_div
+    positions = [to_grid(g[0][0].start) for g in groups]
     beat_divs = 4 * coarse
 
     def nearest(pos, step):
@@ -394,7 +403,7 @@ def quantize_onsets(items: list, seconds_per_div: float, merge_same_slot: bool =
     for group, pos in zip(groups, positions):
         step = 1 if beat_of(pos) in fine_beats else coarse
         slot = max(0, nearest(pos, step))
-        length = max(n.end - n.start for n, _, _ in group) / seconds_per_div
+        length = max(to_grid(n.end) - to_grid(n.start) for n, _, _ in group)
         dur = max(step, int(round(length / step)) * step)
         if events and slot <= events[-1][0]:
             last_slot, last_items, last_dur = events[-1]
@@ -592,13 +601,58 @@ def _add_first_measure_attributes(measure_el: ET.Element, ptype: str, divisions:
         ET.SubElement(staff_tuning, "tuning-octave").text = str(octave)
 
 
-def _add_tempo(measure_el: ET.Element, bpm: float):
+def _add_tempo(measure_el: ET.Element, bpm: float, playback: float = None):
+    """The printed tempo mark (the song's average) and the tempo bar 1 plays at."""
     direction = ET.SubElement(measure_el, "direction", placement="above")
     direction_type = ET.SubElement(direction, "direction-type")
     metronome = ET.SubElement(direction_type, "metronome")
     ET.SubElement(metronome, "beat-unit").text = "quarter"
     ET.SubElement(metronome, "per-minute").text = str(int(round(bpm)))
-    ET.SubElement(direction, "sound", tempo=f"{bpm:.2f}")
+    ET.SubElement(direction, "sound", tempo=f"{playback or bpm:.2f}")
+
+
+class Timeline:
+    """
+    Maps seconds to score positions along a beat map (the time of every beat; a steady
+    grid when only a tempo is known), so bar lines follow a band whose tempo drifts.
+    Bar 1 starts on the downbeat of the bar holding the earliest note (minus half a
+    16th of slack): music before a downbeat becomes a pickup, a silent intro adds no
+    empty bars.
+    """
+
+    def __init__(self, beats, downbeat: float, earliest: float, beats_per_bar: int = BEATS_PER_BAR):
+        self.beats = np.asarray(beats, dtype=float)
+        self.index = np.arange(len(self.beats), dtype=float)
+        self.beats_per_bar = beats_per_bar
+        d = self.beat_position(downbeat)
+        slack = 0.5 * SIXTEENTH / DIVISIONS
+        self.origin = d + beats_per_bar * np.floor((self.beat_position(earliest) - d + slack) / beats_per_bar)
+
+    def beat_position(self, t: float) -> float:
+        """Fractional beat number at time t, continued at the edge tempo outside the map."""
+        b = self.beats
+        if t < b[0]:
+            return (t - b[0]) / (b[1] - b[0])
+        if t > b[-1]:
+            return len(b) - 1 + (t - b[-1]) / (b[-1] - b[-2])
+        return float(np.interp(t, b, self.index))
+
+    def time_at(self, beat: float) -> float:
+        b = self.beats
+        if beat < 0:
+            return b[0] + beat * (b[1] - b[0])
+        if beat > len(b) - 1:
+            return b[-1] + (beat - len(b) + 1) * (b[-1] - b[-2])
+        return float(np.interp(beat, self.index, b))
+
+    def to_grid(self, t: float) -> float:
+        """Score position of time t in divisions from the start of bar 1."""
+        return (self.beat_position(t) - self.origin) * DIVISIONS
+
+    def bar_tempo(self, bar_number: int) -> float:
+        first = self.origin + self.beats_per_bar * (bar_number - 1)
+        seconds = self.time_at(first + self.beats_per_bar) - self.time_at(first)
+        return 60.0 * self.beats_per_bar / max(seconds, 1e-6)
 
 
 def build_musicxml_score(
@@ -612,12 +666,16 @@ def build_musicxml_score(
     bpm: float = 120.0,
     downbeat: float = 0.0,
     vocal_midi_path: str = "",
-    lyrics: list = None
+    lyrics: list = None,
+    beats: list = None
 ) -> str:
     """
     Combines transcribed MIDIs into a clean, multi-part or single-part MusicXML score
     with Tablature, Notation, accurate measure-beat quantization, rests, ties and chords.
-    `downbeat` is the time (s) of any downbeat; bar lines are aligned to it.
+    `downbeat` is the time (s) of any downbeat; bar lines are aligned to it. With
+    `beats` (the time of every beat, the downbeat among them) the grid follows the
+    band's tempo beat by beat; otherwise it runs steadily at `bpm`. The printed tempo
+    is `bpm` (the average); where the bars drift from it, playback tempo follows.
     The vocal melody (part 'vocals') is written with guitar TAB for the notes a guitar
     can play, and `lyrics` ([{"start", "pitch", "text", "syllabic"}], matched to the
     vocal MIDI notes by onset and pitch) under its notes.
@@ -691,20 +749,20 @@ def build_musicxml_score(
     bar_divisions = BAR_DIVISIONS
     seconds_per_div = seconds_per_beat / divisions
 
-    # Snap every part onto one global grid whose bar lines fall on the downbeats: bar 1
-    # is the bar holding the first note (minus half a 16th of slack), so music before a
-    # downbeat becomes a pickup and a silent intro adds no empty bars.
-    bar_seconds = seconds_per_div * bar_divisions
-    starts = [(n if ptype == "drum" else n[0]).start for *_, data, ptype in parts_info for n in data]
-    earliest = min(starts) if starts else downbeat
-    slack = seconds_per_div * SIXTEENTH / 2
-    origin = downbeat + bar_seconds * np.floor((earliest - downbeat + slack) / bar_seconds)
+    # Snap every part onto one global grid whose bar lines fall on the downbeats
+    notes_all = [n if ptype == "drum" else n[0] for *_, data, ptype in parts_info for n in data]
+    earliest = min((n.start for n in notes_all), default=downbeat)
+    latest = max((n.end for n in notes_all), default=downbeat)
+    if beats is None or len(beats) < 4:
+        beats = constant_beats(bpm, downbeat, min(earliest, downbeat) - 8 * seconds_per_beat,
+                               max(latest, downbeat) + 8 * seconds_per_beat)
+    timeline = Timeline(beats, downbeat, earliest)
 
     part_segments = []
     last_slot = int(round(2.0 / seconds_per_div))  # at least ~2 s of score
     for part_key, pid, pname, pabbr, data, ptype in parts_info:
         items = [(n, None, None) for n in data] if ptype == "drum" else data
-        events = quantize_onsets(items, seconds_per_div, merge_same_slot=(ptype == "drum"), origin=origin)
+        events = quantize_onsets(items, merge_same_slot=(ptype == "drum"), to_grid=timeline.to_grid)
         segments, end_slot = split_into_bars(events, bar_divisions, tie=(ptype != "drum"))
         last_slot = max(last_slot, end_slot)
         part_segments.append(segments)
@@ -721,8 +779,14 @@ def build_musicxml_score(
             if bar_num == 1:
                 _add_first_measure_attributes(measure_el, ptype, divisions, fifths, mode,
                                               octave_down=(ptype != "vocal" or low_voice))
-                if part_idx == 0:
-                    _add_tempo(measure_el, bpm)
+            if part_idx == 0:
+                bar_tempo = timeline.bar_tempo(bar_num)
+                if bar_num == 1:
+                    _add_tempo(measure_el, bpm, playback=bar_tempo)
+                    playing = bar_tempo
+                elif abs(bar_tempo / playing - 1) >= TEMPO_CHANGE:
+                    ET.SubElement(measure_el, "sound", tempo=f"{bar_tempo:.2f}")
+                    playing = bar_tempo
 
             cursor = 0
             for slot, slot_items, dur, tie_stop, tie_start in segments.get(bar_num, []):
