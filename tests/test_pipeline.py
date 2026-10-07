@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from src.guitar_splitter import split_guitar_track
 from src.drum_transcriber import transcribe_drums
 from src.tab_builder import optimize_tablature, build_musicxml_score, assign_chord_strings, quantize_onsets, GUITAR_TUNING, BASS_TUNING
+from src.tab_builder import BAR_DIVISIONS, SIXTEENTH
 from src.tab_builder import estimate_key
 from src.chord_recognizer import STANDARD_VOICINGS
 from src.pdf_exporter import convert_ly_to_tab_style
@@ -176,7 +177,7 @@ class TestBandTranscriber(unittest.TestCase):
         self.assertEqual(root.findall(".//note/chord"), [])
 
     def test_measures_are_exactly_full(self):
-        """Every measure must add up to one 4/4 bar (16 divisions), chords counted once."""
+        """Every measure must add up to one 4/4 bar, chords counted once."""
         notes = []
         for i in range(40):  # strummed chords on uneven timing, some crossing bar lines
             start = i * 0.37
@@ -186,7 +187,7 @@ class TestBandTranscriber(unittest.TestCase):
         for measure in root.iter("measure"):
             total = sum(int(n.findtext("duration")) for n in measure.findall("note")
                         if n.find("chord") is None)
-            self.assertEqual(total, 16, f"measure {measure.get('number')}")
+            self.assertEqual(total, BAR_DIVISIONS, f"measure {measure.get('number')}")
 
     def test_quantized_chords_hold_one_note_per_string(self):
         """Even if upstream grouping disagrees, a written chord never reuses a string."""
@@ -279,8 +280,9 @@ class TestBandTranscriber(unittest.TestCase):
                   if n.find("rest") is None]
         summary = [(bar, int(n.findtext("duration")), [t.get("type") for t in n.findall("tie")])
                    for bar, n in played]
-        self.assertEqual(summary, [("1", 4, ["start"]), ("2", 8, ["stop"]),
-                                   ("2", 4, ["start"]), ("2", 1, ["stop"])])
+        q = SIXTEENTH  # durations in sixteenths
+        self.assertEqual(summary, [("1", 4 * q, ["start"]), ("2", 8 * q, ["stop"]),
+                                   ("2", 4 * q, ["start"]), ("2", 1 * q, ["stop"])])
         for _, n in played:  # notation programs draw ties from <tied>
             self.assertEqual(len(n.findall("notations/tied")), len(n.findall("tie")))
             self.assertIsNotNone(n.find("notations/technical/fret"))
@@ -309,7 +311,7 @@ class TestBandTranscriber(unittest.TestCase):
             return result
 
         bar1, bar2 = root.findall("./part/measure")[:2]
-        self.assertEqual(onset_slots(bar1), [(12, "C")])  # 0.5 s before the downbeat = 4 sixteenths early
+        self.assertEqual(onset_slots(bar1), [(12 * SIXTEENTH, "C")])  # 0.5 s before the downbeat = 4 sixteenths early
         self.assertEqual(onset_slots(bar2), [(0, "D")])
 
     def test_silent_intro_adds_no_empty_bars(self):

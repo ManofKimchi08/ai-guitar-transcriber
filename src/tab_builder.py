@@ -93,23 +93,31 @@ def estimate_key(notes: list) -> tuple:
     relative_major = best_tonic if best_mode == "major" else (best_tonic + 3) % 12
     return MAJOR_KEY_FIFTHS[relative_major], best_mode
 
-# MusicXML standard durations (at divisions=4 per quarter beat, 16 per 4/4 bar)
+# Score grid: 32nd-note divisions (8 per quarter beat, 32 per 4/4 bar). Ordinary
+# passages are written on 16ths; a beat uses 32nds only where its notes are that fast.
+DIVISIONS = 8
+BAR_DIVISIONS = 32
+SIXTEENTH = 2  # divisions per 16th note
+
+# MusicXML standard durations, in divisions
 DURATION_TO_TYPE = {
-    16: ("whole", False),
-    12: ("half", True),
-    8: ("half", False),
-    6: ("quarter", True),
-    4: ("quarter", False),
-    3: ("eighth", True),
-    2: ("eighth", False),
-    1: ("16th", False),
+    32: ("whole", False),
+    24: ("half", True),
+    16: ("half", False),
+    12: ("quarter", True),
+    8: ("quarter", False),
+    6: ("eighth", True),
+    4: ("eighth", False),
+    3: ("16th", True),
+    2: ("16th", False),
+    1: ("32nd", False),
 }
 
 
 def decompose_duration(dur: int) -> list:
     """Decomposes a duration in divisions into standard musical values to avoid non-standard rests."""
     chunks = []
-    standards = [16, 12, 8, 6, 4, 3, 2, 1]
+    standards = [32, 24, 16, 12, 8, 6, 4, 3, 2, 1]
     remaining = int(dur)
     while remaining > 0:
         for s in standards:
@@ -131,13 +139,13 @@ def add_type_and_dot(note_el: ET.Element, dur: int):
         if dot:
             ET.SubElement(note_el, "dot")
     else:
-        for std in [16, 8, 4, 2, 1]:
+        for std in [32, 16, 8, 4, 2, 1]:
             if dur >= std:
                 t, _ = DURATION_TO_TYPE[std]
                 ET.SubElement(note_el, "type").text = t
                 break
         else:
-            ET.SubElement(note_el, "type").text = "16th"
+            ET.SubElement(note_el, "type").text = "32nd"
 
 
 def get_fret_candidates(pitch: int, tuning: dict, max_fret: int = 22):
@@ -327,16 +335,20 @@ def optimize_tablature(notes: list, tuning: dict, max_fret: int = 22) -> list:
 
 
 def quantize_onsets(items: list, seconds_per_div: float, merge_same_slot: bool = False,
-                    onset_tol: float = 0.035, origin: float = 0.0) -> list:
+                    onset_tol: float = 0.035, origin: float = 0.0, coarse: int = SIXTEENTH) -> list:
     """
     Snaps (note, string, fret) items onto a global grid of `seconds_per_div` slots
-    starting at time `origin` (slot 0, the first beat of bar 1).
+    (32nd notes) starting at time `origin` (slot 0, the first beat of bar 1).
     Returns [(slot, [items...], dur_in_divs), ...] with strictly increasing slots.
 
+    Notes are written on the `coarse` grid (16ths, so timing jitter does not scatter
+    32nds through ordinary passages); a beat switches to single slots (32nds) only
+    where its notes are that fast.
+
     Notes struck together (within onset_tol) share a slot as one chord. For pitched
-    parts, a separately struck note that rounds into an occupied slot moves to the
-    next slot if that is at most one division late, and is dropped otherwise:
-    stacking it would turn a fast run into an unplayable same-string chord.
+    parts, a separately struck note that still rounds into an occupied slot moves to the
+    next grid step if that is at most a 16th late, and is dropped otherwise: stacking it
+    would turn a fast run into an unplayable same-string chord.
     With merge_same_slot (drums), different instruments may share a slot instead.
     """
     groups = []
@@ -345,20 +357,45 @@ def quantize_onsets(items: list, seconds_per_div: float, merge_same_slot: bool =
             groups[-1].append(it)
         else:
             groups.append([it])
-
-    events = []
-    for group in groups:
-        if not merge_same_slot:
-            # A chord can hold only one note per string; keep the first on each
+    if not merge_same_slot:
+        # A chord can hold only one note per string; keep the first on each
+        for k, group in enumerate(groups):
             kept, used_strings = [], set()
             for it in group:
                 if it[1] not in used_strings:
                     used_strings.add(it[1])
                     kept.append(it)
-            group = kept
-        pos = (group[0][0].start - origin) / seconds_per_div
-        slot = max(0, int(round(pos)))
-        dur = max(1, int(round(max(n.end - n.start for n, _, _ in group) / seconds_per_div)))
+            groups[k] = kept
+
+    positions = [(g[0][0].start - origin) / seconds_per_div for g in groups]
+    beat_divs = 4 * coarse
+
+    def nearest(pos, step):
+        return int(np.floor(pos / step + 0.5)) * step  # halves round up, consistently
+
+    def beat_of(pos):
+        return nearest(pos, 1) // beat_divs
+
+    # Beats too fast for 16ths: two notes that would share a 16th, clearly apart (not
+    # jitter). The beat that switches to 32nds is that of the note off the 16th grid.
+    # For drums, only the same piece struck twice (a roll) counts; different pieces
+    # close together just play together.
+    fine_beats = set()
+    for k in range(1, len(groups)):
+        a, b = positions[k - 1], positions[k]
+        if nearest(a, coarse) != nearest(b, coarse) or b - a < 0.6:
+            continue
+        if merge_same_slot and not ({n.pitch for n, _, _ in groups[k - 1]} & {n.pitch for n, _, _ in groups[k]}):
+            continue
+        off_grid = [p for p in (a, b) if nearest(p, 1) % coarse]
+        fine_beats.update(beat_of(p) for p in (off_grid or [b]))
+
+    events = []
+    for group, pos in zip(groups, positions):
+        step = 1 if beat_of(pos) in fine_beats else coarse
+        slot = max(0, nearest(pos, step))
+        length = max(n.end - n.start for n, _, _ in group) / seconds_per_div
+        dur = max(step, int(round(length / step)) * step)
         if events and slot <= events[-1][0]:
             last_slot, last_items, last_dur = events[-1]
             if merge_same_slot:
@@ -366,14 +403,14 @@ def quantize_onsets(items: list, seconds_per_div: float, merge_same_slot: bool =
                 last_items.extend(it for it in group if it[0].pitch not in seen)
                 events[-1] = (last_slot, last_items, max(last_dur, dur))
                 continue
-            slot = last_slot + 1
-            if slot - pos > 1.0:
-                continue  # too dense for a 16th-note grid
+            slot = last_slot + step
+            if slot - pos > coarse:
+                continue  # too dense even for the grid
         events.append((slot, group, dur))
     return events
 
 
-def split_into_bars(events: list, bar_divisions: int = 16, tie: bool = True) -> tuple:
+def split_into_bars(events: list, bar_divisions: int = BAR_DIVISIONS, tie: bool = True) -> tuple:
     """
     Lays quantized events out bar by bar. Each event lasts until its own end or the
     next event, whichever comes first. A note that crosses a bar line, or lasts a
@@ -407,9 +444,26 @@ def split_into_bars(events: list, bar_divisions: int = 16, tie: bool = True) -> 
     return by_bar, end_slot
 
 
-def _append_rests(measure_el: ET.Element, dur: int):
-    """Appends rests filling `dur` divisions, split into standard note values."""
-    for chunk in decompose_duration(dur):
+def rest_values(pos: int, dur: int) -> list:
+    """
+    Splits a rest from bar position `pos` lasting `dur` divisions into plain (undotted)
+    values that each start on a multiple of their own length, so rests fill out the
+    beat before the next one (a 32nd rest, then a 16th, then an 8th...).
+    """
+    chunks = []
+    while dur > 0:
+        size = BAR_DIVISIONS
+        while size > dur or pos % size:
+            size //= 2
+        chunks.append(size)
+        pos += size
+        dur -= size
+    return chunks
+
+
+def _append_rests(measure_el: ET.Element, dur: int, pos: int = 0):
+    """Appends rests filling `dur` divisions from bar position `pos`."""
+    for chunk in rest_values(pos, dur):
         r_note = ET.SubElement(measure_el, "note")
         ET.SubElement(r_note, "rest")
         ET.SubElement(r_note, "duration").text = str(chunk)
@@ -633,17 +687,18 @@ def build_musicxml_score(
     # Metric & Tempo setup
     bpm = max(45.0, min(240.0, float(bpm)))
     seconds_per_beat = 60.0 / bpm
-    divisions = 4  # 16th note divisions per quarter beat (16 divisions per 4/4 bar)
-    bar_divisions = 16
+    divisions = DIVISIONS
+    bar_divisions = BAR_DIVISIONS
     seconds_per_div = seconds_per_beat / divisions
-    
-    # Snap every part onto one global 16th-note grid whose bar lines fall on the
-    # downbeats: bar 1 is the bar holding the first note (minus a little slack), so
-    # music before a downbeat becomes a pickup and a silent intro adds no empty bars.
+
+    # Snap every part onto one global grid whose bar lines fall on the downbeats: bar 1
+    # is the bar holding the first note (minus half a 16th of slack), so music before a
+    # downbeat becomes a pickup and a silent intro adds no empty bars.
     bar_seconds = seconds_per_div * bar_divisions
     starts = [(n if ptype == "drum" else n[0]).start for *_, data, ptype in parts_info for n in data]
     earliest = min(starts) if starts else downbeat
-    origin = downbeat + bar_seconds * np.floor((earliest - downbeat + seconds_per_div / 2) / bar_seconds)
+    slack = seconds_per_div * SIXTEENTH / 2
+    origin = downbeat + bar_seconds * np.floor((earliest - downbeat + slack) / bar_seconds)
 
     part_segments = []
     last_slot = int(round(2.0 / seconds_per_div))  # at least ~2 s of score
@@ -673,7 +728,7 @@ def build_musicxml_score(
             for slot, slot_items, dur, tie_stop, tie_start in segments.get(bar_num, []):
                 # Fill rest gap before this note slot using standard rest durations
                 if slot > cursor:
-                    _append_rests(measure_el, slot - cursor)
+                    _append_rests(measure_el, slot - cursor, cursor)
                 for idx, (n_obj, s_num, f_num) in enumerate(slot_items):
                     lyric = None
                     if ptype == "vocal" and idx == 0 and not tie_stop:
@@ -685,7 +740,7 @@ def build_musicxml_score(
 
             # Fill the rest of the bar (a whole-bar rest if it held no notes)
             if cursor < bar_divisions:
-                _append_rests(measure_el, bar_divisions - cursor)
+                _append_rests(measure_el, bar_divisions - cursor, cursor)
 
     tree = ET.ElementTree(score)
     ET.indent(tree, space="  ", level=0)
