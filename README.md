@@ -109,7 +109,10 @@ An end-to-end AI music transcription suite that isolates band instruments (Drums
 
 ### 1. 🎧 Meta Demucs v4 기반 6-Stem 고속 음원 분리
 - 보컬, 드럼, 베이스, 기타, 피아노, 기타 배킹 트랙을 GPU(CUDA) 가속으로 고음질 분리.
-- Mid-Side(M/S) 디코딩 및 스펙트럴 분리를 통해 센터 솔로(Lead Guitar)와 스테레오 더블트래킹 백킹(Rhythm Guitar)을 정밀하게 개별 분리.
+- **리드/리듬 기타 분리 (스테레오 위치)**: 시간-주파수 칸마다 좌우 채널이 얼마나 같은지를 비교해, 가운데에 있는 소리(보통 솔로)는 리드 기타로, 좌우로 벌려 녹음한 더블트래킹 백킹은 리듬 기타로 나눕니다. 예전 Mid-Side 방식은 리드 트랙에 리듬 기타 절반이 그대로 섞였습니다 (합성 믹스 기준 리드 멜로디 채보 정확도 0% → 50~75%).
+  - 리듬 기타 한 대가 가운데, 솔로가 한쪽에 있는 믹스는 코드를 치는 쪽을 리듬으로 자동 판별합니다.
+  - 기타가 모노로 녹음된 곡은 위치로 나눌 수 없어 리드·리듬 모두 기타 전체로 채보하고, 기타 파트가 하나뿐이면 리드는 건너뜁니다.
+  - 한계: 리드가 가운데에서 25% 이상 치우치거나 리듬 기타가 가운데 가까이 있으면 잘 나뉘지 않습니다.
 
 ### 2. 🧠 SOTA TorchCREPE GPU 피치 추적 & CQT 코드 인식 (Plan A 엔진)
 - **TorchCREPE 심층 신경망**: 360-bin Viterbi 디코딩으로 저음역(베이스) 및 고음역(기타 솔로)의 옥타브 건너뜀(Octave Jump)과 고스트 노트를 완벽 차단.
@@ -286,7 +289,7 @@ ai_band_transcriber/
 ├── src/                       # 핵심 오디오 분석 및 채보 엔진
 │   ├── pipeline.py            # CLI·GUI 공용 변환 파이프라인 (곡별 출력 폴더)
 │   ├── separator.py           # Meta Demucs 6-stem 음원 분리
-│   ├── guitar_splitter.py     # M/S 기반 Lead / Rhythm 기타 분리
+│   ├── guitar_splitter.py     # 스테레오 위치(센터 추출) 기반 Lead / Rhythm 기타 분리
 │   ├── pitch_transcriber.py   # TorchCREPE GPU 고정밀 F0 피치 트래커
 │   ├── chord_recognizer.py    # CQT 크로마 기반 기타 코드 인식기
 │   ├── drum_transcriber.py    # 대역별 어택 기반 드럼 트랜스크라이버 (킥/스네어/하이햇/크래시)

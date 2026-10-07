@@ -28,8 +28,8 @@ class TestBandTranscriber(unittest.TestCase):
         self.test_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "test_output"))
         os.makedirs(self.test_dir, exist_ok=True)
 
-    def test_guitar_splitter_mid_side(self):
-        """Test Mid-Side separation on a synthetic stereo guitar track."""
+    def test_guitar_splitter_opposite_polarity_sides(self):
+        """Sides in opposite polarity (a stereo widener) must survive a mono downmix."""
         sr = 22050
         duration = 1.0  # 1 second
         t = np.linspace(0, duration, int(sr * duration), endpoint=False)

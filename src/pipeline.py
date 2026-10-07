@@ -265,15 +265,23 @@ def run_pipeline(
     # -------------------------------------------------------------
     # Step 2: Split Guitar into Lead and Rhythm
     # -------------------------------------------------------------
-    progress("2/4 단계: 리드 기타 / 리듬 기타 분할 중 (Mid-Side)...", 0.45)
-    log("\n--- [Step 2] 기타 파트 분리 (Mid-Side 디코딩) ---")
+    progress("2/4 단계: 리드 기타 / 리듬 기타 분할 중 (스테레오 위치 분석)...", 0.45)
+    log("\n--- [Step 2] 기타 파트 분리 (스테레오 위치: 가운데 = 리드, 좌우 = 리듬) ---")
     lead_wav, rhythm_wav = None, None
     if os.path.exists(guitar_wav):
         guitar_parts = split_guitar_track(guitar_wav, stems_dir)
         lead_wav = guitar_parts["lead"]
         rhythm_wav = guitar_parts["rhythm"]
-        log(f"✓ 리드 기타(솔로/센터): {os.path.basename(lead_wav)}")
-        log(f"✓ 리듬 기타(백킹/사이드): {os.path.basename(rhythm_wav)}")
+        method = guitar_parts.get("method")
+        if method == "mono":
+            log("! 기타가 모노라 위치로 나눌 수 없어, 리드/리듬 모두 기타 전체로 채보합니다.")
+        elif method == "stereo-swapped":
+            log("  (가운데 기타가 코드를 연주해 리듬으로, 좌우의 단음 연주를 리드로 봤습니다)")
+        if lead_wav:
+            log(f"✓ 리드 기타: {os.path.basename(lead_wav)}")
+        else:
+            log("! 리드 기타가 들리지 않습니다 (기타 파트가 하나뿐). 리드 파트는 건너뜁니다.")
+        log(f"✓ 리듬 기타: {os.path.basename(rhythm_wav)}")
     else:
         log("! 기타 트랙 없음 (건너뜀)")
 
