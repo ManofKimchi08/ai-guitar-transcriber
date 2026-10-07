@@ -19,17 +19,19 @@ def transcribe_pitch(
     onset_threshold: float = 0.5,
     frame_threshold: float = 0.3,
     minimum_note_length: float = 58.0,
-    include_pitch_bends: bool = True
+    include_pitch_bends: bool = True,
+    crepe_batch_size: int = 1024
 ) -> str:
     """
     Transcribes monophonic or polyphonic audio to MIDI using TorchCREPE or CQT Chords.
-    
+
     Args:
         audio_path: Path to the input WAV audio.
         output_midi_path: Path where the resulting .mid will be saved.
-        instrument_name: 'bass', 'guitar_lead', or 'guitar_rhythm'.
+        instrument_name: 'bass', 'guitar_lead', 'guitar_rhythm', or 'vocals'.
         engine: 'crepe' (SOTA high-precision) or 'basic_pitch'.
-        
+        crepe_batch_size: TorchCREPE frames per GPU batch (lower = less VRAM, same accuracy).
+
     Returns:
         Path to output_midi_path
     """
@@ -46,7 +48,8 @@ def transcribe_pitch(
     # 2. Bass and Lead Guitar use TorchCREPE GPU tracking when engine == 'crepe'
     if engine == "crepe":
         try:
-            return transcribe_with_crepe(audio_path, output_midi_path, instrument_name=instrument_name)
+            return transcribe_with_crepe(audio_path, output_midi_path, instrument_name=instrument_name,
+                                         batch_size=crepe_batch_size)
         except Exception as e:
             print(f"[!] TorchCREPE failed ({e}), falling back to basic pitch.")
 
@@ -67,10 +70,13 @@ def transcribe_with_crepe(
     output_midi_path: str,
     instrument_name: str = "bass",
     model: str = "full",
-    device: str = None
+    device: str = None,
+    batch_size: int = 1024
 ) -> str:
     """
     High-accuracy monophonic pitch tracking using TorchCREPE (CUDA accelerated).
+    VRAM use grows with batch_size: the 'full' model needs about 2.5 GB of
+    activations per 1024 frames.
     """
     import torch
     import torchcrepe
@@ -87,22 +93,34 @@ def transcribe_with_crepe(
     hop_length = 320
     time_step = hop_length / 16000.0
 
-    fmin = 35.0 if instrument_name == "bass" else 75.0
-    fmax = 350.0 if instrument_name == "bass" else 1400.0
-    conf_thresh = 0.25 if instrument_name == "bass" else 0.35
+    # (fmin Hz, fmax Hz, confidence threshold, lowest MIDI note, highest MIDI note)
+    fmin, fmax, conf_thresh, low_note, high_note = {
+        "bass": (35.0, 350.0, 0.25, 28, 60),
+        "vocals": (65.0, 1100.0, 0.45, 36, 90),  # C2..C#6; breathy/unvoiced frames dropped
+    }.get(instrument_name, (75.0, 1400.0, 0.35, 40, 88))
 
     x = torch.from_numpy(y_norm).unsqueeze(0).float().to(device)
-    pitch, periodicity = torchcrepe.predict(
-        x,
-        sample_rate=16000,
-        hop_length=hop_length,
-        fmin=fmin,
-        fmax=fmax,
-        model=model,
-        batch_size=2048,
-        device=device,
-        return_periodicity=True
-    )
+
+    def predict(batch):
+        return torchcrepe.predict(
+            x,
+            sample_rate=16000,
+            hop_length=hop_length,
+            fmin=fmin,
+            fmax=fmax,
+            model=model,
+            batch_size=batch,
+            device=device,
+            return_periodicity=True
+        )
+
+    try:
+        pitch, periodicity = predict(batch_size)
+    except torch.cuda.OutOfMemoryError:
+        # Smaller batches give identical results, just more slowly
+        torch.cuda.empty_cache()
+        print(f"[!] GPU memory exhausted; retrying TorchCREPE with batch size {max(64, batch_size // 4)}...")
+        pitch, periodicity = predict(max(64, batch_size // 4))
     p = pitch.squeeze(0).cpu().numpy()
     conf = periodicity.squeeze(0).cpu().numpy()
 
@@ -118,11 +136,23 @@ def transcribe_with_crepe(
     midi_p = np.zeros(min_len)
     midi_p[voiced] = librosa.hz_to_midi(p[voiced])
 
-    # Median smoothing on contiguous voiced frames
-    if np.sum(voiced) > 5:
-        v_idx = np.where(voiced)[0]
-        smoothed_v = medfilt(midi_p[v_idx], kernel_size=5)
-        midi_p[v_idx] = smoothed_v
+    # Median-smooth each contiguous voiced run on its own, so pitches of separate
+    # notes are never blended across a silence
+    run_start = None
+    for i in range(min_len + 1):
+        if i < min_len and voiced[i]:
+            if run_start is None:
+                run_start = i
+        elif run_start is not None:
+            if i - run_start >= 5:
+                midi_p[run_start:i] = medfilt(midi_p[run_start:i], kernel_size=5)
+            run_start = None
+
+    # Re-struck notes: an onset with a real rise in energy starts a new note even at
+    # the same pitch (vibrato and bends move the spectrum without adding energy)
+    onset_frames = librosa.onset.onset_detect(y=y_norm, sr=16000, hop_length=hop_length, units="frames")
+    attacks = {int(f) for f in onset_frames
+               if 0 < f < min_len and rms[f] >= 1.2 * rms[max(0, f - 3):f].min()}
 
     notes = []
     curr_pitch = None
@@ -144,7 +174,7 @@ def transcribe_with_crepe(
                         velocity=vel, pitch=med_p, start=s_t, end=e_t
                     ))
             else:
-                if 40 <= med_p <= 88:
+                if low_note <= med_p <= high_note:
                     vel = int(np.clip(50 + np.mean(r_samples) * 300, 50, 120))
                     notes.append(pretty_midi.Note(
                         velocity=vel, pitch=med_p, start=s_t, end=e_t
@@ -160,7 +190,8 @@ def transcribe_with_crepe(
                 accum_rms = [rms[i]]
                 accum_pitches = [val]
             else:
-                if abs(val - curr_pitch) >= 0.8:
+                re_struck = i in attacks and t - note_start >= min_dur
+                if abs(val - curr_pitch) >= 0.8 or re_struck:
                     emit_note(note_start, t, accum_pitches, accum_rms)
                     curr_pitch = val
                     note_start = t
@@ -181,8 +212,8 @@ def transcribe_with_crepe(
         emit_note(note_start, min_len * time_step, accum_pitches, accum_rms)
 
     pm = pretty_midi.PrettyMIDI(initial_tempo=120.0)
-    prog = 33 if instrument_name == "bass" else 29
-    inst_name = "Electric Bass" if instrument_name == "bass" else "Lead Guitar"
+    prog, inst_name = {"bass": (33, "Electric Bass"), "vocals": (53, "Vocals")}.get(
+        instrument_name, (29, "Lead Guitar"))
     inst = pretty_midi.Instrument(program=prog, is_drum=False, name=inst_name)
     inst.notes = notes
     pm.instruments.append(inst)
@@ -217,7 +248,14 @@ def transcribe_with_basic_pitch(
             maximum_frequency=max_freq,
             multiple_pitch_bends=include_pitch_bends
         )
-        
+        # With per-note pitch bends basic-pitch spreads the notes over several
+        # instruments; the score reads one, so gather them all into the first
+        if len(midi_data.instruments) > 1:
+            first = midi_data.instruments[0]
+            first.notes = sorted((n for inst in midi_data.instruments for n in inst.notes), key=lambda n: n.start)
+            first.pitch_bends = []
+            midi_data.instruments = [first]
+
         for inst in midi_data.instruments:
             if instrument_name == "bass":
                 inst.program = 33
@@ -229,6 +267,13 @@ def transcribe_with_basic_pitch(
                     if 28 <= n.pitch <= 60 and (n.end - n.start) >= 0.06 and n.velocity >= 30:
                         filtered.append(n)
                 inst.notes = filtered
+            elif instrument_name == "vocals":
+                inst.program = 53
+                inst.name = "Vocals"
+                inst.notes = [
+                    n for n in inst.notes
+                    if 36 <= n.pitch <= 90 and (n.end - n.start) >= 0.06 and n.velocity >= 30
+                ]
             elif instrument_name == "guitar_lead":
                 inst.program = 29
                 inst.name = "Lead Guitar"
@@ -247,7 +292,8 @@ def transcribe_with_basic_pitch(
         midi_data.write(output_midi_path)
         return output_midi_path
 
-    except ImportError:
+    except ImportError as e:
+        print(f"[!] basic-pitch unavailable ({e}); using the librosa pitch fallback.")
         return _fallback_transcribe(audio_path, output_midi_path, instrument_name)
 
 

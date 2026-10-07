@@ -7,10 +7,10 @@ and direct opening of results in Windows Explorer / MuseScore.
 
 import os
 import sys
+import glob
+import queue
 import threading
-import time
-import subprocess
-from pathlib import Path
+import traceback
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
@@ -20,14 +20,14 @@ import customtkinter as ctk
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, PROJECT_DIR)
 
-from src.separator import separate_stems
-from src.guitar_splitter import split_guitar_track
-from src.drum_transcriber import transcribe_drums
-from src.pitch_transcriber import transcribe_pitch
-from src.tab_builder import build_musicxml_score
-from src.youtube_downloader import download_youtube_audio
-from src.pdf_exporter import export_score_to_pdf
+from src.pipeline import run_pipeline, is_url, VRAM_PROFILES, vram_profile_for
 from src.fretboard_gui import FretboardEditorDialog
+from src.lyrics_gui import LyricsEditorDialog
+
+OUTPUT_ROOT = os.path.join(PROJECT_DIR, "output")
+
+# Lyrics language choices -> Whisper language code (None = detect)
+LYRICS_LANGUAGES = {"자동 감지": None, "한국어": "ko", "English": "en", "日本語": "ja"}
 
 # Set CustomTkinter theme
 ctk.set_appearance_mode("Dark")
@@ -45,11 +45,14 @@ class BandTranscriberApp(ctk.CTk):
         # Check GPU
         self.gpu_name = "CPU Only"
         self.has_cuda = False
+        self.default_vram = "8gb"
         try:
             import torch
             if torch.cuda.is_available():
                 self.has_cuda = True
-                self.gpu_name = f"NVIDIA {torch.cuda.get_device_name(0)} (CUDA 가속 활성)"
+                vram_gb = torch.cuda.get_device_properties(0).total_memory / 1024 ** 3
+                self.default_vram = vram_profile_for(vram_gb)
+                self.gpu_name = f"NVIDIA {torch.cuda.get_device_name(0)} · VRAM {vram_gb:.1f}GB (CUDA 가속 활성)"
         except Exception:
             pass
 
@@ -57,6 +60,9 @@ class BandTranscriberApp(ctk.CTk):
         self.last_score_path = None
         self.last_pdf_path = None
         self.last_output_dir = None
+
+        # Worker thread -> UI thread messages (Tk widgets must only be touched by the UI thread)
+        self._ui_queue = queue.Queue()
 
         self._build_ui()
         self._restore_recent_scores()
@@ -118,6 +124,16 @@ class BandTranscriberApp(ctk.CTk):
         )
         self.btn_fret_editor.grid(row=2, column=1, padx=6, pady=(2, 8), sticky="ew")
 
+        self.btn_lyrics_editor = ctk.CTkButton(
+            bottom_frame,
+            text="🎤 가사 수정 (Lyrics Editor)",
+            height=38,
+            fg_color="#8E44AD",
+            hover_color="#6C3483",
+            command=self._open_lyrics_editor
+        )
+        self.btn_lyrics_editor.grid(row=3, column=0, columnspan=2, padx=6, pady=(0, 8), sticky="ew")
+
         # 2. Main Scrollable Container (Takes all remaining vertical space, scrolls smoothly)
         scroll_body = ctk.CTkScrollableFrame(self, corner_radius=0, fg_color="transparent")
         scroll_body.pack(side="top", fill="both", expand=True, padx=8, pady=(4, 2))
@@ -135,7 +151,7 @@ class BandTranscriberApp(ctk.CTk):
 
         subtitle_label = ctk.CTkLabel(
             header_frame,
-            text="음원을 드럼, 베이스, 리드 기타, 리듬 기타로 분리하고 오선보/타브(TAB) 악보를 자동 생성합니다.",
+            text="음원을 드럼, 베이스, 리드/리듬 기타, 보컬로 분리하고 오선보/타브(TAB) 악보와 가사를 자동 생성합니다.",
             font=ctk.CTkFont(size=12),
             text_color="gray75"
         )
@@ -170,9 +186,8 @@ class BandTranscriberApp(ctk.CTk):
         lbl_out = ctk.CTkLabel(files_frame, text="저장 폴더 선택:", font=ctk.CTkFont(weight="bold"))
         lbl_out.grid(row=1, column=0, sticky="w", padx=15, pady=(6, 10))
 
-        default_out = os.path.join(PROJECT_DIR, "output")
         self.entry_output = ctk.CTkEntry(files_frame, width=520)
-        self.entry_output.insert(0, default_out)
+        self.entry_output.insert(0, OUTPUT_ROOT)
         self.entry_output.grid(row=1, column=1, padx=10, pady=(6, 10), sticky="ew")
 
         btn_browse_out = ctk.CTkButton(files_frame, text="폴더 찾기...", width=100, command=self._browse_output)
@@ -206,6 +221,19 @@ class BandTranscriberApp(ctk.CTk):
         self.chk_rhythm.select()
         self.chk_rhythm.pack(side="left", padx=18)
 
+        vocal_row = ctk.CTkFrame(opt_frame, fg_color="transparent")
+        vocal_row.pack(fill="x", padx=15, pady=(0, 8))
+
+        self.chk_vocals = ctk.CTkCheckBox(vocal_row, text="🎤 보컬 멜로디 + 가사 (Vocals)")
+        self.chk_vocals.pack(side="left", padx=(0, 18))
+
+        lbl_lang = ctk.CTkLabel(vocal_row, text="가사 언어:")
+        lbl_lang.pack(side="left", padx=(18, 6))
+
+        self.opt_lyrics_lang = ctk.CTkOptionMenu(vocal_row, values=list(LYRICS_LANGUAGES), width=120)
+        self.opt_lyrics_lang.set("자동 감지")
+        self.opt_lyrics_lang.pack(side="left")
+
         lbl_style = ctk.CTkLabel(opt_frame, text="악보 출력 형태 (PDF):", font=ctk.CTkFont(weight="bold"))
         lbl_style.pack(anchor="w", padx=15, pady=(2, 4))
 
@@ -215,6 +243,16 @@ class BandTranscriberApp(ctk.CTk):
         )
         self.seg_style.set("🎸 타브 악보만 (TAB)")
         self.seg_style.pack(fill="x", padx=15, pady=(0, 10))
+
+        lbl_vram = ctk.CTkLabel(opt_frame, text="GPU 메모리 (VRAM):", font=ctk.CTkFont(weight="bold"))
+        lbl_vram.pack(anchor="w", padx=15, pady=(2, 4))
+
+        self.seg_vram = ctk.CTkSegmentedButton(
+            opt_frame,
+            values=[profile["label"] for profile in VRAM_PROFILES.values()]
+        )
+        self.seg_vram.set(VRAM_PROFILES[self.default_vram]["label"])
+        self.seg_vram.pack(fill="x", padx=15, pady=(0, 10))
 
         # 4. Action & Progress Frame
         action_frame = ctk.CTkFrame(scroll_body, corner_radius=10)
@@ -270,6 +308,28 @@ class BandTranscriberApp(ctk.CTk):
         self.lbl_status.configure(text=text)
         self.prog_bar.set(progress)
 
+    def _selected_parts(self) -> list:
+        parts = []
+        if self.chk_drums.get(): parts.append('drums')
+        if self.chk_bass.get(): parts.append('bass')
+        if self.chk_rhythm.get(): parts.append('rhythm')
+        if self.chk_lead.get(): parts.append('lead')
+        if self.chk_vocals.get(): parts.append('vocals')
+        return parts
+
+    def _selected_style(self) -> str:
+        chosen_style = self.seg_style.get()
+        if "둘 다" in chosen_style:
+            return "both"
+        if "오선보" in chosen_style:
+            return "standard"
+        return "tab"
+
+    def _selected_vram(self) -> str:
+        chosen = self.seg_vram.get()
+        return next((key for key, profile in VRAM_PROFILES.items() if profile["label"] == chosen),
+                    self.default_vram)
+
     def _start_pipeline_thread(self):
         if self.is_running:
             return
@@ -277,8 +337,7 @@ class BandTranscriberApp(ctk.CTk):
         input_audio = self.entry_input.get().strip()
         output_dir = self.entry_output.get().strip()
 
-        is_url = input_audio.startswith("http://") or input_audio.startswith("https://")
-        if not input_audio or (not is_url and not os.path.exists(input_audio)):
+        if not input_audio or (not is_url(input_audio) and not os.path.exists(input_audio)):
             messagebox.showerror("오류", "유효한 음원 파일 경로를 선택하거나 유튜브 링크(URL)를 입력해 주세요.")
             return
 
@@ -292,202 +351,86 @@ class BandTranscriberApp(ctk.CTk):
         self.btn_open_score.configure(state="disabled")
         self.txt_log.delete("1.0", "end")
 
-        thread = threading.Thread(target=self._run_pipeline, args=(input_audio, output_dir), daemon=True)
+        # Read widget state here, on the UI thread; the worker only gets plain values.
+        parts = self._selected_parts()
+        style = self._selected_style()
+        vram = self._selected_vram()
+        lyrics_language = LYRICS_LANGUAGES[self.opt_lyrics_lang.get()]
+
+        thread = threading.Thread(target=self._run_pipeline,
+                                  args=(input_audio, output_dir, parts, style, vram, lyrics_language),
+                                  daemon=True)
         thread.start()
+        self.after(100, self._drain_ui_queue)
 
-    def _run_pipeline(self, input_audio: str, output_dir: str):
-        start_time = time.time()
-        stems_dir = os.path.join(output_dir, "stems")
-        midi_dir = os.path.join(output_dir, "midi")
-        score_dir = os.path.join(output_dir, "scores")
-
-        os.makedirs(stems_dir, exist_ok=True)
-        os.makedirs(midi_dir, exist_ok=True)
-        os.makedirs(score_dir, exist_ok=True)
-
+    def _run_pipeline(self, input_audio: str, output_dir: str, parts: list, style: str, vram: str,
+                      lyrics_language: str = None):
+        """Worker thread: never touches Tk widgets, only posts messages to the UI queue."""
+        post = self._ui_queue.put
         try:
-            is_url = input_audio.startswith("http://") or input_audio.startswith("https://")
-            if is_url:
-                self._set_status("유튜브 음원 다운로드 및 변환 중 (최고 음질 WAV)...", 0.05)
-                self._log(f"[*] 유튜브 링크 감지: {input_audio}")
-                self._log("[*] yt-dlp & FFmpeg를 통해 최고 음질 오디오 추출 중...")
-                local_wav, video_title = download_youtube_audio(input_audio, output_dir)
-                input_audio = local_wav
-                song_title = Path(input_audio).stem
-                self._log(f"✓ 다운로드 및 변환 완료: {video_title}")
-                self._log(f"✓ 로컬 음원 파일: {local_wav}\n")
-            else:
-                song_title = Path(input_audio).stem
-                self._log(f"[*] 로컬 음원 변환 시작: {os.path.basename(input_audio)}")
-
-            self._log(f"[*] 출력 폴더: {output_dir}")
-
-            # ----------------------------------------------------
-            # Step 1: Demucs 6-Stem Separation
-            # ----------------------------------------------------
-            self._set_status("1/4 단계: Meta Demucs 6-Stem 음원 분리 중 (GPU)...", 0.15)
-            self._log("\n--- [Step 1] AI 음원 분리 (Demucs htdemucs_6s) ---")
-            
-            stems = separate_stems(input_audio, output_dir, model_name="htdemucs_6s")
-            drums_wav = stems.get("drums", os.path.join(stems_dir, "drums.wav"))
-            bass_wav = stems.get("bass", os.path.join(stems_dir, "bass.wav"))
-            guitar_wav = stems.get("guitar", os.path.join(stems_dir, "guitar.wav"))
-
-            self._log(f"✓ 분리 완료: 드럼, 베이스, 기타 스템 생성됨")
-            self.prog_bar.set(0.40)
-
-            # ----------------------------------------------------
-            # Step 2: Guitar Split (Lead vs Rhythm)
-            # ----------------------------------------------------
-            self._set_status("2/4 단계: 리드 기타 / 리듬 기타 분할 중 (Mid-Side)...", 0.45)
-            self._log("\n--- [Step 2] 기타 파트 분리 (Mid-Side 디코딩) ---")
-            
-            lead_wav, rhythm_wav = None, None
-            if os.path.exists(guitar_wav):
-                guitar_parts = split_guitar_track(guitar_wav, stems_dir)
-                lead_wav = guitar_parts["lead"]
-                rhythm_wav = guitar_parts["rhythm"]
-                self._log(f"✓ 리드 기타(솔로/센터): {os.path.basename(lead_wav)}")
-                self._log(f"✓ 리듬 기타(백킹/사이드): {os.path.basename(rhythm_wav)}")
-            else:
-                self._log("! 기타 트랙 없음 (건너뜀)")
-
-            self.prog_bar.set(0.60)
-
-            # ----------------------------------------------------
-            # Step 3: MIDI Transcription
-            # ----------------------------------------------------
-            self._set_status("3/4 단계: 각 악기별 고정밀 MIDI 변환 중 (TorchCREPE & CQT Chords)...", 0.65)
-            self._log("\n--- [Step 3] 고정밀 MIDI 전사 (TorchCREPE GPU & CQT Chords) ---")
-
-            drum_midi = os.path.join(midi_dir, "drums.mid")
-            if self.chk_drums.get() and os.path.exists(drums_wav):
-                self._log("  - 드럼 트랙 분석 중 (Kick, Snare, Hi-Hat 적응형 온셋)...")
-                transcribe_drums(drums_wav, drum_midi)
-                self._log(f"  ✓ 드럼 MIDI: {os.path.basename(drum_midi)}")
-
-            bass_midi = os.path.join(midi_dir, "bass.mid")
-            if self.chk_bass.get() and os.path.exists(bass_wav):
-                self._log("  - 베이스 기타 심층 F0 추적 중 (TorchCREPE GPU 360-bin)...")
-                transcribe_pitch(bass_wav, bass_midi, instrument_name="bass")
-                self._log(f"  ✓ 베이스 MIDI: {os.path.basename(bass_midi)}")
-
-            lead_midi = os.path.join(midi_dir, "lead_guitar.mid")
-            if self.chk_lead.get() and lead_wav and os.path.exists(lead_wav):
-                self._log("  - 리드 기타 솔로 멜로디 추적 중 (TorchCREPE GPU)...")
-                transcribe_pitch(lead_wav, lead_midi, instrument_name="guitar_lead")
-                self._log(f"  ✓ 리드 기타 MIDI: {os.path.basename(lead_midi)}")
-
-            rhythm_midi = os.path.join(midi_dir, "rhythm_guitar.mid")
-            if self.chk_rhythm.get() and rhythm_wav and os.path.exists(rhythm_wav):
-                self._log("  - 리듬 기타 다성 화음 분석 중 (CQT 크로마 & 6줄 타브 폼)...")
-                transcribe_pitch(rhythm_wav, rhythm_midi, instrument_name="guitar_rhythm")
-                self._log(f"  ✓ 리듬 기타 MIDI: {os.path.basename(rhythm_midi)}")
-
-            self.prog_bar.set(0.85)
-
-            # ----------------------------------------------------
-            # Step 4: TAB Optimization & MusicXML
-            # ----------------------------------------------------
-            self._set_status("4/4 단계: 프렛보드 운지 최적화 및 맞춤 악보(MusicXML/PDF) 생성 중...", 0.90)
-            self._log("\n--- [Step 4] 동적 계획법(DP) 타브 운지 최적화 & 조판 ---")
-
-            # Collect selected instrument parts
-            selected_parts = []
-            if self.chk_drums.get(): selected_parts.append('drums')
-            if self.chk_bass.get(): selected_parts.append('bass')
-            if self.chk_rhythm.get(): selected_parts.append('rhythm')
-            if self.chk_lead.get(): selected_parts.append('lead')
-            if not selected_parts:
-                selected_parts = ['lead']
-                self._log("! 선택된 파트가 없어 기본값(리드 기타)으로 악보를 생성합니다.")
-
-            # Dynamic BPM tracking for precision measure & beat sync
-            import librosa
-            try:
-                y_bpm, sr_bpm = librosa.load(input_audio, sr=22050, duration=45.0)
-                detected_tempo, _ = librosa.beat.beat_track(y=y_bpm, sr=sr_bpm)
-                bpm_val = float(detected_tempo)
-                if hasattr(bpm_val, '__len__'):
-                    bpm_val = float(bpm_val[0])
-                if bpm_val < 50:
-                    bpm_val = 120.0
-                elif bpm_val > 220:
-                    bpm_val = bpm_val / 2.0
-            except Exception:
-                bpm_val = 120.0
-
-            self._log(f"  ✓ 곡 템포 자동 분석: {bpm_val:.1f} BPM (정밀 박자/마디 동기화 적용)")
-            self._log(f"  ✓ 악보 포함 파트: {', '.join(selected_parts)}")
-
-            part_suffix = "" if len(selected_parts) == 4 else f"_{'_'.join(selected_parts)}"
-            full_score_xml = os.path.join(score_dir, f"{song_title}{part_suffix}_score.musicxml")
-            build_musicxml_score(
-                drum_midi_path=drum_midi if 'drums' in selected_parts else "",
-                bass_midi_path=bass_midi if 'bass' in selected_parts else "",
-                lead_midi_path=lead_midi if 'lead' in selected_parts else "",
-                rhythm_midi_path=rhythm_midi if 'rhythm' in selected_parts else "",
-                output_xml_path=full_score_xml,
-                song_title=song_title,
-                selected_parts=selected_parts,
-                bpm=bpm_val
+            result = run_pipeline(
+                input_audio, output_dir, parts=parts, style=style, vram=vram,
+                lyrics_language=lyrics_language,
+                log=lambda text: post(("log", text)),
+                progress=lambda text, fraction: post(("status", text, fraction))
             )
-
-            # Headless PDF Export via LilyPond
-            chosen_style = self.seg_style.get()
-            if "둘 다" in chosen_style:
-                st = "both"
-            elif "오선보" in chosen_style:
-                st = "standard"
-            else:
-                st = "tab"
-
-            pdf_path = export_score_to_pdf(full_score_xml, style=st)
-            if pdf_path:
-                self._log(f"  📄 PDF 악보 생성 완료 ({chosen_style}): {os.path.basename(pdf_path)}")
-                self.last_pdf_path = pdf_path
-                self.btn_open_pdf.configure(state="normal")
-            else:
-                self._log("ℹ️ [알림] PDF 생성 엔진 오류 시 'MuseScore로 열기'를 통해 직접 [파일 > 내보내기 > PDF]로도 즉시 저장 가능합니다.")
-
-            elapsed = time.time() - start_time
-            self._set_status(f"🎉 모든 작업 완료! ({elapsed:.1f}초 소요)", 1.0)
-            self._log(f"\n=======================================================")
-            self._log(f"🎉 성공적으로 완성되었습니다! 총 소요 시간: {elapsed:.1f}초")
-            self._log(f"📁 총보 파일: {full_score_xml}")
-            if self.last_pdf_path:
-                self._log(f"📄 PDF 파일: {self.last_pdf_path}")
-            self._log(f"=======================================================")
-
-            self.last_score_path = full_score_xml
-            self.last_output_dir = output_dir
-
-            # Update selected score label
-            self.lbl_active_score.configure(
-                text=f"🎼 선택된 악보: {os.path.basename(full_score_xml)}",
-                text_color="#34C759"
-            )
-
-            self.btn_open_folder.configure(state="normal")
-            self.btn_open_score.configure(state="normal")
-
+            post(("done", result))
         except Exception as e:
-            self._set_status("❌ 오류가 발생했습니다. 로그를 확인해 주세요.", 0.0)
-            self._log(f"\n[!] 오류 발생: {str(e)}")
-            import traceback
-            self._log(traceback.format_exc())
-            messagebox.showerror("변환 오류", f"처리 중 오류가 발생했습니다:\n{str(e)}")
-        finally:
-            self.is_running = False
-            self.btn_run.configure(state="normal", text="🚀 악보 및 타브 생성 시작")
+            post(("error", e, traceback.format_exc()))
+
+    def _drain_ui_queue(self):
+        """Applies worker messages on the UI thread, polling until the run ends."""
+        try:
+            while True:
+                msg = self._ui_queue.get_nowait()
+                kind = msg[0]
+                if kind == "log":
+                    self._log(msg[1])
+                elif kind == "status":
+                    self._set_status(msg[1], msg[2])
+                elif kind == "done":
+                    self._on_pipeline_done(msg[1])
+                elif kind == "error":
+                    self._on_pipeline_error(msg[1], msg[2])
+        except queue.Empty:
+            pass
+        if self.is_running:
+            self.after(100, self._drain_ui_queue)
+
+    def _on_pipeline_done(self, result: dict):
+        self.is_running = False
+        self.btn_run.configure(state="normal", text="🚀 악보 및 타브 생성 시작")
+        self._set_status(f"🎉 모든 작업 완료! ({result['elapsed']:.1f}초 소요)", 1.0)
+
+        self.last_score_path = result["score_xml"]
+        self.last_output_dir = result["song_dir"]
+        # Never leave the PDF button pointing at another song's PDF
+        self.last_pdf_path = result["pdf_path"]
+        if self.last_pdf_path:
+            self.btn_open_pdf.configure(state="normal")
+
+        self.lbl_active_score.configure(
+            text=f"🎼 선택된 악보: {os.path.basename(self.last_score_path)}",
+            text_color="#34C759"
+        )
+        self.btn_open_folder.configure(state="normal")
+        self.btn_open_score.configure(state="normal")
+
+    def _on_pipeline_error(self, error: Exception, tb_text: str):
+        self.is_running = False
+        self.btn_run.configure(state="normal", text="🚀 악보 및 타브 생성 시작")
+        self._set_status("❌ 오류가 발생했습니다. 로그를 확인해 주세요.", 0.0)
+        self._log(f"\n[!] 오류 발생: {error}")
+        self._log(tb_text)
+        messagebox.showerror("변환 오류", f"처리 중 오류가 발생했습니다:\n{error}")
 
     def _restore_recent_scores(self):
         """
-        Auto-detect the most recent MusicXML and PDF scores from output/scores on app startup
+        Auto-detect the most recent MusicXML and PDF scores under output/ on app startup
         so that buttons are immediately ready to use even after restarting the application.
+        Scores live in output/<song>/scores/ (older versions wrote output/scores/).
         """
-        output_dir = os.path.join(PROJECT_DIR, "output")
-        scores_dir = os.path.join(output_dir, "scores")
+        output_dir = OUTPUT_ROOT
 
         # 1. Output folder button is enabled whenever output directory exists
         if os.path.exists(output_dir):
@@ -495,48 +438,44 @@ class BandTranscriberApp(ctk.CTk):
             self.btn_open_folder.configure(state="normal")
 
         # 2. Check for existing MusicXML scores
-        if os.path.exists(scores_dir):
-            xml_files = [
-                os.path.join(scores_dir, f) for f in os.listdir(scores_dir)
-                if f.lower().endswith(('.musicxml', '.xml'))
-            ]
-            if xml_files:
-                xml_files.sort(key=lambda p: os.path.getmtime(p), reverse=True)
-                latest_xml = xml_files[0]
-                self.last_score_path = latest_xml
-                self.btn_open_score.configure(state="normal")
+        xml_files = []
+        for scores_dir in (os.path.join(output_dir, "*", "scores"), os.path.join(output_dir, "scores")):
+            for ext in ("*.musicxml", "*.xml"):
+                xml_files.extend(glob.glob(os.path.join(scores_dir, ext)))
+        if not xml_files:
+            return
 
-                # Check for corresponding PDF
-                base_no_ext = os.path.splitext(latest_xml)[0]
-                candidates = [
-                    f"{base_no_ext}_TAB.pdf",
-                    f"{base_no_ext}.pdf",
-                ]
-                latest_pdf = None
-                for c in candidates:
-                    if os.path.exists(c):
-                        latest_pdf = c
-                        break
-                if not latest_pdf:
-                    pdf_files = [
-                        os.path.join(scores_dir, f) for f in os.listdir(scores_dir)
-                        if f.lower().endswith('.pdf')
-                    ]
-                    if pdf_files:
-                        pdf_files.sort(key=lambda p: os.path.getmtime(p), reverse=True)
-                        latest_pdf = pdf_files[0]
+        latest_xml = max(xml_files, key=os.path.getmtime)
+        scores_dir = os.path.dirname(latest_xml)
+        self.last_score_path = latest_xml
+        self.btn_open_score.configure(state="normal")
+        if os.path.basename(scores_dir) == "scores" and os.path.dirname(scores_dir) != output_dir:
+            self.last_output_dir = os.path.dirname(scores_dir)
 
-                if latest_pdf and os.path.exists(latest_pdf):
-                    self.last_pdf_path = latest_pdf
-                    self.btn_open_pdf.configure(state="normal")
+        # Check for corresponding PDF
+        base_no_ext = os.path.splitext(latest_xml)[0]
+        candidates = [
+            f"{base_no_ext}_TAB.pdf",
+            f"{base_no_ext}_TAB_Score.pdf",
+            f"{base_no_ext}.pdf",
+        ]
+        latest_pdf = next((c for c in candidates if os.path.exists(c)), None)
+        if not latest_pdf:
+            pdf_files = glob.glob(os.path.join(scores_dir, "*.pdf"))
+            if pdf_files:
+                latest_pdf = max(pdf_files, key=os.path.getmtime)
 
-                self.lbl_active_score.configure(
-                    text=f"🎼 최근 악보: {os.path.basename(latest_xml)}",
-                    text_color="#34C759"
-                )
+        if latest_pdf:
+            self.last_pdf_path = latest_pdf
+            self.btn_open_pdf.configure(state="normal")
+
+        self.lbl_active_score.configure(
+            text=f"🎼 최근 악보: {os.path.basename(latest_xml)}",
+            text_color="#34C759"
+        )
 
     def _open_folder(self):
-        target_dir = self.last_output_dir or os.path.join(PROJECT_DIR, "output")
+        target_dir = self.last_output_dir or OUTPUT_ROOT
         if os.path.exists(target_dir):
             os.startfile(target_dir)
         else:
@@ -544,7 +483,7 @@ class BandTranscriberApp(ctk.CTk):
 
     def _open_score(self):
         score_path = self.last_score_path
-        default_scores = os.path.join(PROJECT_DIR, "output", "scores")
+        default_scores = self.last_output_dir or OUTPUT_ROOT
 
         # If no score selected yet, prompt user to choose one
         if not score_path or not os.path.exists(score_path):
@@ -571,7 +510,7 @@ class BandTranscriberApp(ctk.CTk):
 
     def _open_pdf(self):
         pdf_path = self.last_pdf_path
-        default_scores = os.path.join(PROJECT_DIR, "output", "scores")
+        default_scores = self.last_output_dir or OUTPUT_ROOT
 
         # If no PDF selected yet, prompt user to choose one
         if not pdf_path or not os.path.exists(pdf_path):
@@ -592,28 +531,29 @@ class BandTranscriberApp(ctk.CTk):
         except Exception as e:
             messagebox.showinfo("알림", f"PDF 파일을 열 수 없습니다:\n{e}")
 
-    def _open_fret_editor(self):
+    def _select_score_for_editing(self, title: str):
+        """Returns the score to edit (the current one, or one the user picks), or None."""
         score_path = self.last_score_path
-        default_scores = os.path.join(PROJECT_DIR, "output", "scores")
+        default_scores = self.last_output_dir or OUTPUT_ROOT
         
         # If no score was generated in current session, ask user to select one
         if not score_path or not os.path.exists(score_path):
             chosen = filedialog.askopenfilename(
-                title="운지를 수정할 타브 악보(MusicXML) 파일을 선택하세요",
+                title=title,
                 initialdir=default_scores if os.path.exists(default_scores) else PROJECT_DIR,
                 filetypes=[("MusicXML 악보 (*.musicxml, *.xml)", "*.musicxml *.xml"), ("모든 파일 (*.*)", "*.*")]
             )
             if chosen and os.path.exists(chosen):
                 score_path = chosen
             else:
-                return
+                return None
 
         self.last_score_path = score_path
         self.btn_open_score.configure(state="normal")
 
         # Also link matching PDF if available
         base_no_ext = os.path.splitext(score_path)[0]
-        for c in [f"{base_no_ext}_TAB.pdf", f"{base_no_ext}.pdf"]:
+        for c in [f"{base_no_ext}_TAB.pdf", f"{base_no_ext}_TAB_Score.pdf", f"{base_no_ext}.pdf"]:
             if os.path.exists(c):
                 self.last_pdf_path = c
                 self.btn_open_pdf.configure(state="normal")
@@ -623,16 +563,26 @@ class BandTranscriberApp(ctk.CTk):
             text=f"🎼 선택된 악보: {os.path.basename(score_path)}",
             text_color="#34C759"
         )
-        self._log(f"\n🎸 프렛보드 편집기 실행: {os.path.basename(score_path)}")
+        return score_path
 
-        chosen_style = self.seg_style.get()
-        st = "both" if "둘 다" in chosen_style else ("standard" if "오선보" in chosen_style else "tab")
-        FretboardEditorDialog(self, xml_path=score_path, pdf_callback=self._on_pdf_reexported, style=st)
+    def _open_fret_editor(self):
+        score_path = self._select_score_for_editing("운지를 수정할 타브 악보(MusicXML) 파일을 선택하세요")
+        if not score_path:
+            return
+        self._log(f"\n🎸 프렛보드 편집기 실행: {os.path.basename(score_path)}")
+        FretboardEditorDialog(self, xml_path=score_path, pdf_callback=self._on_pdf_reexported, style=self._selected_style())
+
+    def _open_lyrics_editor(self):
+        score_path = self._select_score_for_editing("가사를 수정할 악보(MusicXML) 파일을 선택하세요")
+        if not score_path:
+            return
+        self._log(f"\n🎤 가사 편집기 실행: {os.path.basename(score_path)}")
+        LyricsEditorDialog(self, xml_path=score_path, pdf_callback=self._on_pdf_reexported, style=self._selected_style())
 
     def _on_pdf_reexported(self, new_pdf_path):
         self.last_pdf_path = new_pdf_path
         self.btn_open_pdf.configure(state="normal")
-        self._log(f"📄 프렛보드 편집기를 통해 PDF 악보가 갱신되었습니다: {os.path.basename(new_pdf_path)}")
+        self._log(f"📄 편집기를 통해 PDF 악보가 갱신되었습니다: {os.path.basename(new_pdf_path)}")
 
 
 def main():

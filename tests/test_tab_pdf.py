@@ -7,7 +7,7 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from src.pdf_exporter import find_lilypond
 
-lilypond_exe = find_lilypond()
+_, _, lilypond_exe = find_lilypond()
 if not lilypond_exe:
     raise RuntimeError("LilyPond not found!")
 
