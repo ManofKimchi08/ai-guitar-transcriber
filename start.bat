@@ -21,7 +21,7 @@ echo [*] 가상환경이 없거나 설치가 완료되지 않았습니다.
 echo [*] 최초 1회 자동 설치를 시작합니다.
 echo.
 
-rem 필수 패키지는 Python 3.10 / 3.11용만 제공되므로, py 런처로 해당 버전을 먼저 찾습니다.
+rem 검증된 Python 3.10 / 3.11을 py 런처로 먼저 찾습니다.
 set "PY="
 py -3.11 -c "import sys" >nul 2>nul
 if %ERRORLEVEL% EQU 0 set "PY=py -3.11"
@@ -66,6 +66,9 @@ if %ERRORLEVEL% NEQ 0 (
     pause
     exit /b 1
 )
+rem 예비 채보기 basic-pitch: TensorFlow 대신 onnxruntime으로 돌도록 의존성 없이 설치 (실패해도 계속)
+"%~dp0venv\Scripts\python.exe" -m pip install --no-deps basic-pitch==0.4.0
+if %ERRORLEVEL% NEQ 0 echo [INFO] basic-pitch 설치 실패: 예비 채보는 librosa 방식으로 대신합니다.
 
 if not exist "%~dp0venv" mkdir "%~dp0venv" 2>nul
 echo installed > "%~dp0venv\.installed"

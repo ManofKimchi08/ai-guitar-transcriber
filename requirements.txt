@@ -3,7 +3,13 @@ torch>=2.2.0
 torchaudio>=2.2.0
 torchcrepe>=0.0.23
 demucs>=4.0.1
-basic-pitch>=0.3.0
+# basic-pitch (fallback transcriber when TorchCREPE fails) is installed separately with
+#   pip install --no-deps basic-pitch==0.4.0
+# so it runs on onnxruntime instead of pulling in the full TensorFlow (its pins are not
+# taken over: resampy<0.4.3 needs pkg_resources, gone from new setuptools, and would
+# break TorchCREPE). What its inference imports beyond the packages above:
+onnxruntime>=1.16
+mir-eval>=0.6
 librosa>=0.10.0
 faster-whisper>=1.1.0
 pyphen>=0.14.0

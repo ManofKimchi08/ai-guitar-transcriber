@@ -242,6 +242,8 @@ pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu124
 
 # 4. 필수 의존성 패키지 설치
 pip install -r requirements.txt
+# (예비 채보기 basic-pitch: TensorFlow 없이 onnxruntime으로 돌도록 의존성 없이 설치)
+pip install --no-deps basic-pitch==0.4.0
 
 # 5. GUI 실행
 python app_gui.py

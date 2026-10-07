@@ -248,7 +248,14 @@ def transcribe_with_basic_pitch(
             maximum_frequency=max_freq,
             multiple_pitch_bends=include_pitch_bends
         )
-        
+        # With per-note pitch bends basic-pitch spreads the notes over several
+        # instruments; the score reads one, so gather them all into the first
+        if len(midi_data.instruments) > 1:
+            first = midi_data.instruments[0]
+            first.notes = sorted((n for inst in midi_data.instruments for n in inst.notes), key=lambda n: n.start)
+            first.pitch_bends = []
+            midi_data.instruments = [first]
+
         for inst in midi_data.instruments:
             if instrument_name == "bass":
                 inst.program = 33
@@ -285,7 +292,8 @@ def transcribe_with_basic_pitch(
         midi_data.write(output_midi_path)
         return output_midi_path
 
-    except ImportError:
+    except ImportError as e:
+        print(f"[!] basic-pitch unavailable ({e}); using the librosa pitch fallback.")
         return _fallback_transcribe(audio_path, output_midi_path, instrument_name)
 
 
