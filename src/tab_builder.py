@@ -381,7 +381,9 @@ def triplet_beats(beat_positions: list) -> set:
     Beats whose notes divide them in three: given onsets in (fractional) beats from bar 1,
     a beat is a triplet beat when a note inside it lies clearly off the 16th grid (more
     than 0.06 of a beat: beyond timing jitter) and the notes fit thirds of the beat at
-    least twice as well as quarters (a swung eighth on the beat's last third counts).
+    least twice as well as quarters (a swung eighth on the beat's last third counts),
+    or, for a run of three or more notes, when they lie off the 32nd grid and fit sixths
+    at least twice as well as eighths (a sextuplet: triplet 16ths).
     """
     by_beat = {}
     for p in beat_positions:
@@ -394,7 +396,11 @@ def triplet_beats(beat_positions: list) -> set:
         f = np.asarray(fracs)
         off_quarters = np.abs(f - np.round(f * 4) / 4)
         off_thirds = np.abs(f - np.round(f * 3) / 3)
-        if off_quarters.max() > 0.06 and off_thirds.mean() < 0.5 * off_quarters.mean():
+        off_eighths = np.abs(f - np.round(f * 8) / 8)
+        off_sixths = np.abs(f - np.round(f * 6) / 6)
+        thirds = off_quarters.max() > 0.06 and off_thirds.mean() < 0.5 * off_quarters.mean()
+        sixths = len(f) >= 3 and off_eighths.max() > 0.03 and off_sixths.mean() < 0.5 * off_eighths.mean()
+        if thirds or sixths:
             chosen.add(beat)
     return chosen
 

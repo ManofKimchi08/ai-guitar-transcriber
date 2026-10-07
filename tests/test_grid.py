@@ -110,6 +110,15 @@ class TestScoreGrid(unittest.TestCase):
         self.assertEqual(len(starts), 4)
         self.assertEqual(len(build.root.findall(".//tuplet[@type='stop']")), 4)
 
+    def test_sextuplet_run(self):
+        """Six notes in a beat (a sextuplet run) are written as triplet 16ths, each on its sixth."""
+        beats = [0, 1] + [2 + k / 6 for k in range(6)] + [3]
+        events = build("sextuplet", [note(60 + i, b, 0.1, jitter=0.006 * ((-1) ** i)) for i, b in enumerate(beats)])
+        played = [(on, t) for on, t, chord, rest in events if not rest]
+        self.assertEqual([round(on, 3) for on, _ in played], [round(b, 3) for b in beats])
+        self.assertEqual([t for on, t in played if 2 <= on < 3], ["16th"] * 6)
+        self.assertEqual(len(build.root.findall(".//time-modification")), 6)
+
     def test_shuffle_is_written_in_twelve_eight(self):
         """Swung eighths on every beat: 12/8, each note on its eighth, no triplet brackets."""
         beats = [b + f for b in range(16) for f in (0, 2 / 3)]
