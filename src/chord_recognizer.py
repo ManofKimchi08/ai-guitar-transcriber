@@ -119,8 +119,10 @@ def recognize_chords(audio_path: str, segment_sec: float = 0.5, strums: bool = T
     """
     Recognizes the chord progression and, within it, the strums.
 
-    1. Chroma (CQT) of the harmonic part; frames far below the track's loud level
-       are silence.
+    1. Chroma (CQT) of the harmonic part, per channel and added up (two guitar takes
+       panned left and right, slightly out of tune with each other, would cancel
+       each other's notes now and then if mixed down first); frames far below the
+       track's loud level are silence.
     2. Every frame is scored against the 48 chord templates and a "no chord" state.
     3. A Viterbi pass (HMM with sticky self-transitions) smooths the labels so a
        chord does not flicker on passing tones; chords shorter than `segment_sec`
@@ -130,7 +132,9 @@ def recognize_chords(audio_path: str, segment_sec: float = 0.5, strums: bool = T
 
     Returns [{'start': t0, 'end': t1, 'chord': 'Am', 'voicing': [(s, f), ...]}].
     """
-    y, sr = librosa.load(audio_path, sr=22050, mono=True)
+    channels, sr = librosa.load(audio_path, sr=22050, mono=False)
+    channels = np.atleast_2d(channels)
+    y = channels.mean(axis=0)
     hop = 512
     if len(y) < hop * 4:
         return []
@@ -140,7 +144,9 @@ def recognize_chords(audio_path: str, segment_sec: float = 0.5, strums: bool = T
     if loud < 1e-4:
         return []
 
-    chroma = librosa.feature.chroma_cqt(y=librosa.effects.harmonic(y), sr=sr, hop_length=hop)
+    chroma = sum(librosa.feature.chroma_cqt(y=librosa.effects.harmonic(np.ascontiguousarray(ch)), sr=sr,
+                                            hop_length=hop, norm=None)
+                 for ch in channels)
     n = min(chroma.shape[1], len(rms))
     chroma, rms = chroma[:, :n], rms[:n]
     silent = rms < loud * SILENCE_RATIO

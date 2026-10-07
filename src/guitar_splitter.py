@@ -23,6 +23,9 @@ from scipy.ndimage import uniform_filter
 FFT_SEC = 0.093                  # ~4096 samples at 44.1 kHz: fine frequency resolution keeps
                                  # lead and chord partials apart
 SMOOTH = (3, 3)                  # bins x frames compared together
+# ...and over this long a stretch too: two takes of the same chords line up in phase
+# now and then (and look centred for a moment), a centred lead stays centred
+LONG_SEC = 0.4
 # Channel similarity -> centre mask, soft in between: a sound panned up to ~25% off
 # centre still counts as centred, rhythm guitars panned ~60% or more do not
 CENTER_LO, CENTER_HI = 0.85, 0.98
@@ -33,17 +36,23 @@ PAD_SEC = 1.0                    # context around each block, far beyond the STF
 SWAP_MARGIN = 1.0                # centre this many more pitch classes per frame than the sides: it holds the chords
 
 
-def channel_similarity(left_spec: np.ndarray, right_spec: np.ndarray) -> np.ndarray:
+def channel_similarity(left_spec: np.ndarray, right_spec: np.ndarray, long_frames: int = 0) -> np.ndarray:
     """
     Per time-frequency bin, how alike the channels are, 0..1: 1 for a centred sound,
     2ab/(a^2+b^2) for one panned with gains a, b, and ~0 for unrelated sounds in the
     two channels. Uses the real part of the cross-spectrum, so equal-level sounds with
-    different phases (two takes of one part) do not count as centred.
+    different phases (two takes of one part) do not count as centred. With
+    `long_frames`, the lower of the short-range and the long-range similarity: a
+    moment where two takes happen to line up in phase is not enough to be centred.
     """
-    sll = uniform_filter(np.abs(left_spec) ** 2, SMOOTH)
-    srr = uniform_filter(np.abs(right_spec) ** 2, SMOOTH)
-    slr = uniform_filter(np.real(left_spec * np.conj(right_spec)), SMOOTH)
-    return np.clip(2 * slr / (sll + srr + 1e-12), 0.0, 1.0)
+    power = np.abs(left_spec) ** 2 + np.abs(right_spec) ** 2
+    cross = np.real(left_spec * np.conj(right_spec))
+
+    def similarity(size):
+        return np.clip(2 * uniform_filter(cross, size) / (uniform_filter(power, size) + 1e-12), 0.0, 1.0)
+
+    short = similarity(SMOOTH)
+    return np.minimum(short, similarity((SMOOTH[0], long_frames))) if long_frames > SMOOTH[1] else short
 
 
 def center_mask(similarity: np.ndarray) -> np.ndarray:
@@ -56,11 +65,11 @@ def fft_size(sr: int) -> int:
     return 2 ** int(round(np.log2(FFT_SEC * sr)))
 
 
-def _split_block(left: np.ndarray, right: np.ndarray, n_fft: int) -> tuple:
+def _split_block(left: np.ndarray, right: np.ndarray, n_fft: int, long_frames: int = 0) -> tuple:
     hop = n_fft // 4
     L = librosa.stft(left, n_fft=n_fft, hop_length=hop)
     R = librosa.stft(right, n_fft=n_fft, hop_length=hop)
-    mask = center_mask(channel_similarity(L, R))
+    mask = center_mask(channel_similarity(L, R, long_frames))
     n = len(left)
     center = librosa.istft(mask * 0.5 * (L + R), hop_length=hop, length=n)
     side_l = librosa.istft((1 - mask) * L, hop_length=hop, length=n)
@@ -68,22 +77,25 @@ def _split_block(left: np.ndarray, right: np.ndarray, n_fft: int) -> tuple:
     return center, side_l, side_r
 
 
-def split_center_sides(left: np.ndarray, right: np.ndarray, sr: int) -> tuple:
+def split_center_sides(left: np.ndarray, right: np.ndarray, sr: int, strict_center: bool = True) -> tuple:
     """
     Centre (mono) and sides (stereo) of a stereo signal. The sides keep their two
     channels: two takes left and right add up when downmixed, while a [side, -side]
-    pair would cancel to silence.
+    pair would cancel to silence. `strict_center` also asks the centre to stay centred
+    over LONG_SEC (keeps panned takes out of a centred lead); without it, what is
+    centred for a moment counts (keeps a centred rhythm guitar out of a panned lead).
     """
     n = len(left)
     n_fft = fft_size(sr)
     hop = n_fft // 4
+    long_frames = int(round(LONG_SEC * sr / hop)) | 1 if strict_center else 0
     block, pad = int(BLOCK_SEC * sr) // hop * hop, int(PAD_SEC * sr)
     center = np.zeros(n, dtype=np.float32)
     sides = np.zeros((n, 2), dtype=np.float32)
     for start in range(0, n, block):
         end = min(n, start + block)
         a, b = max(0, (start - pad) // hop * hop), min(n, end + pad)  # frames on the global grid
-        c, sl, sr_ = _split_block(left[a:b], right[a:b], n_fft)
+        c, sl, sr_ = _split_block(left[a:b], right[a:b], n_fft, long_frames)
         center[start:end] = c[start - a:end - a]
         sides[start:end, 0] = sl[start - a:end - a]
         sides[start:end, 1] = sr_[start - a:end - a]
@@ -147,6 +159,8 @@ def split_guitar_track(input_wav_path: str, output_dir: str) -> dict:
     elif center_energy < ABSENT_RATIO * total:
         lead, rhythm = None, sides  # only bleed in the centre: no lead guitar
     elif chord_density(center, sr) > chord_density(sides.mean(axis=1), sr) + SWAP_MARGIN:
+        # The lead is on a side: now the centre (chords) must not leak into it
+        center, sides = split_center_sides(left, right, sr, strict_center=False)
         lead, rhythm, method = sides.mean(axis=1), center, "stereo-swapped"
     else:
         lead, rhythm = center, sides

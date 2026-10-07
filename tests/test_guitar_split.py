@@ -1,7 +1,7 @@
 """
 Tests for splitting the guitar stem into lead and rhythm guitar by stereo position, on
 synthetic mixes: a centred lead melody over two rhythm guitar takes panned left and
-right, the reverse layout, a mono guitar, and a single guitar panned to one side.
+right (hard or +-60%), the reverse layout, a mono guitar, and rhythm guitars with no lead.
 """
 
 import os
@@ -104,6 +104,20 @@ class TestGuitarSplit(unittest.TestCase):
         for b, chord in enumerate(PROGRESSION):
             mid_bar = 0.25 + (b + 0.5) * 4 * BEAT
             self.assertEqual(next(c["chord"] for c in chords if c["start"] <= mid_bar < c["end"]), chord)
+
+    def test_partly_panned_rhythm_takes(self):
+        """Rhythm takes at +-60% (each one partly in both channels) stay out of the lead."""
+        lead = lead_line(self.n, 11)
+        takes = pan(rhythm_take(self.n, 12), -0.6) + pan(rhythm_take(self.n, 13, cents=4), 0.6)
+        res = self.split("wide", pan(lead, 0) + takes)
+        mix_mono = (pan(lead, 0) + takes).mean(axis=1)
+        self.assertGreater(magnitude_sdr(mono(sf.read(res["lead"])[0]), lead), magnitude_sdr(mix_mono, lead) + 8.0)
+
+    def test_panned_takes_alone_have_no_lead(self):
+        """Two takes panned hard left and right, nothing between: no lead part. Their chords
+        line up in phase now and then, which must not pass for a centred guitar."""
+        takes = pan(rhythm_take(self.n, 12), -1) + pan(rhythm_take(self.n, 13, cents=4), 1)
+        self.assertIsNone(self.split("takes_only", takes)["lead"])
 
     def test_chords_in_the_centre_become_rhythm(self):
         """One rhythm guitar in the middle and the solo panned to a side."""
