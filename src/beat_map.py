@@ -17,8 +17,9 @@ even when its tempo drifts (no click track), speeds up or breathes.
    snare alternation from pulse to pulse, is half-time (a 160 BPM song tracked at
    80 on the snares), so the halfway points are beats too. On drifting tempos the
    tracker often locks onto the eighth notes.
-4. The downbeat is the beat position (of 4) where low-frequency attacks and chord
-   changes are strongest.
+4. The bar: 3 or 4 beats, whichever period the low-frequency attacks and chord
+   changes repeat with more clearly (4 unless 3 is clearly stronger), and the
+   downbeat is the beat position where they are strongest.
 """
 
 import numpy as np
@@ -31,6 +32,7 @@ ENVELOPE_LATENCY = 0.016
 SUBDIVISION_RATIO = 0.55  # every other pulse this much quieter: the pulse is the eighth note
 HALF_TIME_RATIO = 0.8     # points between slow pulses this loud: the pulse is every other beat...
 BACKBEAT_RATIO = 0.7      # ...unless kick and snare alternate pulse by pulse (a real backbeat)
+TRIPLE_METER_MARGIN = 1.25  # bars of 3 must stand out this much more than bars of 4
 
 
 def _number_pulses(times: np.ndarray) -> np.ndarray:
@@ -103,14 +105,16 @@ def constant_beats(bpm: float, downbeat: float, start: float, end: float) -> np.
 def analyze_beat_map(audio_path: str, default_bpm: float = 120.0) -> dict:
     """
     Returns {"bpm": average tempo, "downbeat": time of a downbeat (s),
-    "beats": every beat time (s) across the recording, the downbeat among them}.
-    Falls back to a steady grid at `default_bpm` when no beat can be found.
+    "beats": every beat time (s) across the recording, the downbeat among them,
+    "beats_per_bar": 3 or 4}. Falls back to a steady 4/4 grid at `default_bpm` when no
+    beat can be found.
     """
     import librosa
     try:
         y, sr = librosa.load(audio_path, sr=22050, mono=True, duration=600.0)
     except Exception:
-        return {"bpm": default_bpm, "downbeat": 0.0, "beats": constant_beats(default_bpm, 0.0, 0.0, 600.0)}
+        return {"bpm": default_bpm, "downbeat": 0.0, "beats": constant_beats(default_bpm, 0.0, 0.0, 600.0),
+                "beats_per_bar": 4}
     duration = len(y) / sr
     hop = HOP
     envelope = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop)
@@ -119,7 +123,7 @@ def analyze_beat_map(audio_path: str, default_bpm: float = 120.0) -> dict:
     if len(pulses) < 8:
         bpm = float(np.atleast_1d(tempo)[0]) if np.size(tempo) else default_bpm
         bpm = bpm if 50 <= bpm <= 220 else default_bpm
-        return {"bpm": bpm, "downbeat": 0.0, "beats": constant_beats(bpm, 0.0, 0.0, duration)}
+        return {"bpm": bpm, "downbeat": 0.0, "beats": constant_beats(bpm, 0.0, 0.0, duration), "beats_per_bar": 4}
 
     grid = _smooth_pulses(_number_pulses(pulses), pulses)
 
@@ -140,7 +144,8 @@ def analyze_beat_map(audio_path: str, default_bpm: float = 120.0) -> dict:
         grid = np.sort(np.concatenate([grid, halfway]))  # half-time pulse
     bpm = 60.0 * (len(grid) - 1) / float(grid[-1] - grid[0])  # the average over the tracked span
     if not 50 <= bpm <= 220 or len(grid) < 8:
-        return {"bpm": default_bpm, "downbeat": 0.0, "beats": constant_beats(default_bpm, 0.0, 0.0, duration)}
+        return {"bpm": default_bpm, "downbeat": 0.0, "beats": constant_beats(default_bpm, 0.0, 0.0, duration),
+                "beats_per_bar": 4}
     beats = _extend(grid, 0.0, duration)
 
     # Downbeat: the beat position (of 4) where low attacks and chord changes are
@@ -151,7 +156,7 @@ def analyze_beat_map(audio_path: str, default_bpm: float = 120.0) -> dict:
     positions = 8 if half_time_suspect else 4
     candidates = candidates[(candidates >= 0) & (candidates < duration)]
     if len(candidates) < 2 * positions:
-        return {"bpm": float(bpm), "downbeat": float(beats[0]), "beats": beats}
+        return {"bpm": float(bpm), "downbeat": float(beats[0]), "beats": beats, "beats_per_bar": 4}
 
     cand_frames = np.clip(librosa.time_to_frames(candidates, sr=sr, hop_length=hop), 0, None)
     low = _strength_at(low_onsets, candidates, sr, hop)
@@ -170,4 +175,16 @@ def analyze_beat_map(audio_path: str, default_bpm: float = 120.0) -> dict:
     if half_time_suspect and np.min(np.abs(beats - downbeat)) > 1e-6:
         # The bar starts between tracked beats: the beats are the half-beats
         beats = _extend((beats[:-1] + beats[1:]) / 2, 0.0, duration)
-    return {"bpm": float(bpm), "downbeat": downbeat, "beats": beats}
+
+    # Bars of 3 or 4: the period the evidence repeats with, over the beats themselves
+    on_beat = np.array([np.min(np.abs(beats - c)) < 1e-6 for c in candidates])
+    beat_evidence, beat_times = evidence[on_beat], candidates[on_beat]
+    beats_per_bar = 4
+    if len(beat_evidence) >= 24:
+        def standout(m):
+            means = [beat_evidence[j::m].mean() for j in range(m)]
+            return max(means) - float(np.mean(beat_evidence)), int(np.argmax(means))
+        (triple, phase), (quadruple, _) = standout(3), standout(4)
+        if triple > TRIPLE_METER_MARGIN * max(quadruple, 1e-9):
+            beats_per_bar, downbeat = 3, float(beat_times[phase])
+    return {"bpm": float(bpm), "downbeat": downbeat, "beats": beats, "beats_per_bar": beats_per_bar}

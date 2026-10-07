@@ -95,33 +95,55 @@ def estimate_key(notes: list) -> tuple:
     relative_major = best_tonic if best_mode == "major" else (best_tonic + 3) % 12
     return MAJOR_KEY_FIFTHS[relative_major], best_mode
 
-# Score grid: 32nd-note divisions (8 per quarter beat, 32 per 4/4 bar). Ordinary
-# passages are written on 16ths; a beat uses 32nds only where its notes are that fast.
-DIVISIONS = 8
-BAR_DIVISIONS = 32
-SIXTEENTH = 2  # divisions per 16th note
+# Score grid: 24 divisions per quarter note, so 32nd notes (3) and triplet 16ths (4)
+# both fall on it. Ordinary passages are written on 16ths; a beat uses 32nds only where
+# its notes are that fast, and triplets where its notes divide it in three.
+DIVISIONS = 24
+THIRTY_SECOND, SIXTEENTH, EIGHTH, QUARTER = 3, 6, 12, 24
+TRIPLET_SIXTEENTH, TRIPLET_EIGHTH = 4, 8
 BEATS_PER_BAR = 4
+BAR_DIVISIONS = BEATS_PER_BAR * QUARTER  # a 4/4 bar
 TEMPO_CHANGE = 0.03  # a bar this much faster or slower than playback so far gets its own tempo
+COMPOUND_SHARE = 0.6  # this share of the beats with notes inside them divided in three: compound meter
 
 # MusicXML standard durations, in divisions
 DURATION_TO_TYPE = {
-    32: ("whole", False),
-    24: ("half", True),
-    16: ("half", False),
-    12: ("quarter", True),
-    8: ("quarter", False),
-    6: ("eighth", True),
-    4: ("eighth", False),
-    3: ("16th", True),
-    2: ("16th", False),
-    1: ("32nd", False),
+    96: ("whole", False),
+    72: ("half", True),
+    48: ("half", False),
+    36: ("quarter", True),
+    24: ("quarter", False),
+    18: ("eighth", True),
+    12: ("eighth", False),
+    9: ("16th", True),
+    6: ("16th", False),
+    3: ("32nd", False),
 }
+# Inside a triplet beat (three in the time of two)
+TRIPLET_TYPE = {16: "quarter", 8: "eighth", 4: "16th"}
+
+
+class Meter:
+    """
+    The bar: `beats_per_bar` beats, each a quarter note (simple meter: 3/4, 4/4) or a
+    dotted quarter of three eighths (compound meter: 6/8, 9/8, 12/8, for shuffles and
+    songs whose every beat divides in three).
+    """
+
+    def __init__(self, beats_per_bar: int = BEATS_PER_BAR, compound: bool = False):
+        self.beats_per_bar = beats_per_bar
+        self.compound = compound
+        self.beat = 36 if compound else QUARTER
+        self.bar = self.beat * beats_per_bar
+        self.time_signature = (beats_per_bar * 3, 8) if compound else (beats_per_bar, 4)
+        # plain rest values, each starting on a multiple of its own length
+        self.rest_sizes = [72, 36, 12, 6, 3] if compound else [48, 24, 12, 6, 3]
 
 
 def decompose_duration(dur: int) -> list:
     """Decomposes a duration in divisions into standard musical values to avoid non-standard rests."""
     chunks = []
-    standards = [32, 24, 16, 12, 8, 6, 4, 3, 2, 1]
+    standards = [96, 72, 48, 36, 24, 18, 12, 9, 6, 3]
     remaining = int(dur)
     while remaining > 0:
         for s in standards:
@@ -130,20 +152,36 @@ def decompose_duration(dur: int) -> list:
                 remaining -= s
                 break
         else:
-            chunks.append(1)
-            remaining -= 1
+            chunks.append(remaining)
+            remaining = 0
     return chunks
 
 
-def add_type_and_dot(note_el: ET.Element, dur: int):
-    """Adds standard <type> and optional <dot/> tags to a note or rest element."""
-    if dur in DURATION_TO_TYPE:
+def decompose_triplet(dur: int) -> list:
+    """A stretch inside a triplet beat as triplet quarters, eighths and 16ths."""
+    chunks = []
+    remaining = int(dur)
+    while remaining > 0:
+        size = next((s for s in (16, 8, 4) if s <= remaining), remaining)
+        chunks.append(size)
+        remaining -= size
+    return chunks
+
+
+def add_type_and_dot(note_el: ET.Element, dur: int, triplet: bool = False):
+    """Adds standard <type> and optional <dot/> tags (and the 3:2 ratio for a triplet)."""
+    if triplet:
+        ET.SubElement(note_el, "type").text = TRIPLET_TYPE.get(dur, "eighth")
+        modification = ET.SubElement(note_el, "time-modification")
+        ET.SubElement(modification, "actual-notes").text = "3"
+        ET.SubElement(modification, "normal-notes").text = "2"
+    elif dur in DURATION_TO_TYPE:
         t, dot = DURATION_TO_TYPE[dur]
         ET.SubElement(note_el, "type").text = t
         if dot:
             ET.SubElement(note_el, "dot")
     else:
-        for std in [32, 16, 8, 4, 2, 1]:
+        for std in [96, 48, 24, 12, 6, 3]:
             if dur >= std:
                 t, _ = DURATION_TO_TYPE[std]
                 ET.SubElement(note_el, "type").text = t
@@ -338,18 +376,42 @@ def optimize_tablature(notes: list, tuning: dict, max_fret: int = 22) -> list:
     return optimal_path
 
 
+def triplet_beats(beat_positions: list) -> set:
+    """
+    Beats whose notes divide them in three: given onsets in (fractional) beats from bar 1,
+    a beat is a triplet beat when a note inside it lies clearly off the 16th grid (more
+    than 0.06 of a beat: beyond timing jitter) and the notes fit thirds of the beat at
+    least twice as well as quarters (a swung eighth on the beat's last third counts).
+    """
+    by_beat = {}
+    for p in beat_positions:
+        beat = int(np.floor(p + 0.04))
+        frac = p - beat
+        if 0.04 < frac < 0.96:
+            by_beat.setdefault(beat, []).append(frac)
+    chosen = set()
+    for beat, fracs in by_beat.items():
+        f = np.asarray(fracs)
+        off_quarters = np.abs(f - np.round(f * 4) / 4)
+        off_thirds = np.abs(f - np.round(f * 3) / 3)
+        if off_quarters.max() > 0.06 and off_thirds.mean() < 0.5 * off_quarters.mean():
+            chosen.add(beat)
+    return chosen
+
+
 def quantize_onsets(items: list, seconds_per_div: float = None, merge_same_slot: bool = False,
                     onset_tol: float = 0.035, origin: float = 0.0, coarse: int = SIXTEENTH,
-                    to_grid=None) -> list:
+                    to_grid=None, beat: int = QUARTER, triplets: set = frozenset()) -> list:
     """
-    Snaps (note, string, fret) items onto a global grid of 32nd-note slots, slot 0 being
-    the first beat of bar 1: `to_grid(seconds)` gives the (fractional) slot along the
-    song's beat map, or slots are `seconds_per_div` long from time `origin`.
+    Snaps (note, string, fret) items onto the score grid, slot 0 being the first beat of
+    bar 1: `to_grid(seconds)` gives the (fractional) position in divisions along the
+    song's beat map, or divisions are `seconds_per_div` long from time `origin`.
     Returns [(slot, [items...], dur_in_divs), ...] with strictly increasing slots.
 
-    Notes are written on the `coarse` grid (16ths, so timing jitter does not scatter
-    32nds through ordinary passages); a beat switches to single slots (32nds) only
-    where its notes are that fast.
+    Each beat (`beat` divisions) is written on 16ths (`coarse`), or on triplet eighths
+    when it is in `triplets`, so timing jitter does not scatter 32nds through ordinary
+    passages; a beat switches to the finer step (32nds, triplet 16ths) only where its
+    notes are that fast. A note's end snaps to the grid of the beat it ends in.
 
     Notes struck together (within onset_tol) share a slot as one chord. For pitched
     parts, a separately struck note that still rounds into an occupied slot moves to the
@@ -377,34 +439,44 @@ def quantize_onsets(items: list, seconds_per_div: float = None, merge_same_slot:
         def to_grid(t):
             return (t - origin) / seconds_per_div
     positions = [to_grid(g[0][0].start) for g in groups]
-    beat_divs = 4 * coarse
 
     def nearest(pos, step):
         return int(np.floor(pos / step + 0.5)) * step  # halves round up, consistently
 
     def beat_of(pos):
-        return nearest(pos, 1) // beat_divs
+        return int(np.floor(pos + 0.5)) // beat
 
-    # Beats too fast for 16ths: two notes that would share a 16th, clearly apart (not
-    # jitter). The beat that switches to 32nds is that of the note off the 16th grid.
-    # For drums, only the same piece struck twice (a roll) counts; different pieces
-    # close together just play together.
+    def steps(b):
+        return (TRIPLET_EIGHTH, TRIPLET_SIXTEENTH) if b in triplets else (coarse, coarse // 2)
+
+    # Beats too fast for their grid: two notes that would share a grid step, clearly
+    # apart (not jitter). The beat that switches to the finer step is that of the note
+    # off the coarse grid. For drums, only the same piece struck twice (a roll) counts;
+    # different pieces close together just play together.
     fine_beats = set()
     for k in range(1, len(groups)):
         a, b = positions[k - 1], positions[k]
-        if nearest(a, coarse) != nearest(b, coarse) or b - a < 0.6:
+        big, small = steps(beat_of(b))
+        if nearest(a, big) != nearest(b, big) or b - a < 0.6 * small:
             continue
         if merge_same_slot and not ({n.pitch for n, _, _ in groups[k - 1]} & {n.pitch for n, _, _ in groups[k]}):
             continue
-        off_grid = [p for p in (a, b) if nearest(p, 1) % coarse]
+        off_grid = [p for p in (a, b) if nearest(p, steps(beat_of(p))[1]) % steps(beat_of(p))[0]]
         fine_beats.update(beat_of(p) for p in (off_grid or [b]))
+
+    def step_at(pos):
+        b = beat_of(pos)
+        big, small = steps(b)
+        return small if b in fine_beats else big
 
     events = []
     for group, pos in zip(groups, positions):
-        step = 1 if beat_of(pos) in fine_beats else coarse
+        step = step_at(pos)
+        big = steps(beat_of(pos))[0]
         slot = max(0, nearest(pos, step))
-        length = max(to_grid(n.end) - to_grid(n.start) for n, _, _ in group)
-        dur = max(step, int(round(length / step)) * step)
+        end_pos = max(to_grid(n.end) for n, _, _ in group)
+        end = nearest(end_pos, step_at(end_pos))
+        dur = max(step, end - slot)
         if events and slot <= events[-1][0]:
             last_slot, last_items, last_dur = events[-1]
             if merge_same_slot:
@@ -413,18 +485,41 @@ def quantize_onsets(items: list, seconds_per_div: float = None, merge_same_slot:
                 events[-1] = (last_slot, last_items, max(last_dur, dur))
                 continue
             slot = last_slot + step
-            if slot - pos > coarse:
+            if slot - pos > big:
                 continue  # too dense even for the grid
+            dur = max(step, end - slot)
         events.append((slot, group, dur))
     return events
 
 
-def split_into_bars(events: list, bar_divisions: int = BAR_DIVISIONS, tie: bool = True) -> tuple:
+def _spans(start: int, end: int, bar: int, beat: int, triplets: set) -> list:
+    """
+    Cuts start..end at bar lines and at the edges of triplet beats:
+    [(position, length, inside a triplet beat)].
+    """
+    out = []
+    pos = start
+    while pos < end:
+        b = pos // beat
+        if b in triplets:
+            stop = min(end, (b + 1) * beat)
+        else:
+            stop = min(end, (pos // bar + 1) * bar)
+            nxt = next((t for t in sorted(triplets) if t > b and t * beat < stop), None)
+            if nxt is not None:
+                stop = nxt * beat
+        out.append((pos, stop - pos, b in triplets))
+        pos = stop
+    return out
+
+
+def split_into_bars(events: list, bar_divisions: int = BAR_DIVISIONS, tie: bool = True,
+                    beat: int = QUARTER, triplets: set = frozenset()) -> tuple:
     """
     Lays quantized events out bar by bar. Each event lasts until its own end or the
-    next event, whichever comes first. A note that crosses a bar line, or lasts a
-    value with no single note symbol (e.g. 5 sixteenths), becomes tied standard
-    values; without `tie` (drum hits) only the first value is kept.
+    next event, whichever comes first. A note that crosses a bar line or a triplet
+    beat's edge, or lasts a value with no single note symbol (e.g. 5 sixteenths),
+    becomes tied standard values; without `tie` (drum hits) only the first value is kept.
 
     Returns ({bar_number: [(slot_in_bar, items, dur, tie_stop, tie_start), ...]},
     end_slot) where end_slot is where the last sounding value ends.
@@ -437,12 +532,12 @@ def split_into_bars(events: list, bar_divisions: int = BAR_DIVISIONS, tie: bool 
             end = min(end, events[i + 1][0])
 
         pieces = []
-        pos = slot
-        while pos < end:
-            bar_end = (pos // bar_divisions + 1) * bar_divisions
-            for d in decompose_duration(min(end, bar_end) - pos):
+        for pos, length, in_triplet in _spans(slot, end, bar_divisions, beat, triplets):
+            for d in (decompose_triplet(length) if in_triplet else decompose_duration(length)):
                 pieces.append((pos, d))
                 pos += d
+        if not pieces:
+            continue
         if not tie:
             pieces = pieces[:1]
 
@@ -453,39 +548,89 @@ def split_into_bars(events: list, bar_divisions: int = BAR_DIVISIONS, tie: bool 
     return by_bar, end_slot
 
 
-def rest_values(pos: int, dur: int) -> list:
+def rest_values(pos: int, dur: int, sizes: list = None) -> list:
     """
-    Splits a rest from bar position `pos` lasting `dur` divisions into plain (undotted)
-    values that each start on a multiple of their own length, so rests fill out the
-    beat before the next one (a 32nd rest, then a 16th, then an 8th...).
+    Splits a rest from bar position `pos` lasting `dur` divisions into plain values
+    (`sizes`, largest first) that each start on a multiple of their own length, so rests
+    fill out the beat before the next one (a 32nd rest, then a 16th, then an 8th...).
     """
+    sizes = sizes or [BAR_DIVISIONS, 48, 24, 12, 6, 3]
     chunks = []
     while dur > 0:
-        size = BAR_DIVISIONS
-        while size > dur or pos % size:
-            size //= 2
+        size = next((s for s in sizes if s <= dur and pos % s == 0), min(dur, sizes[-1]))
         chunks.append(size)
         pos += size
         dur -= size
     return chunks
 
 
-def _append_rests(measure_el: ET.Element, dur: int, pos: int = 0):
-    """Appends rests filling `dur` divisions from bar position `pos`."""
-    for chunk in rest_values(pos, dur):
-        r_note = ET.SubElement(measure_el, "note")
-        ET.SubElement(r_note, "rest")
-        ET.SubElement(r_note, "duration").text = str(chunk)
-        ET.SubElement(r_note, "voice").text = "1"
-        add_type_and_dot(r_note, chunk)
+def _append_rest(measure_el: ET.Element, dur: int, triplet: bool = False, tuplet: str = None,
+                 whole_bar: bool = False):
+    r_note = ET.SubElement(measure_el, "note")
+    ET.SubElement(r_note, "rest", measure="yes") if whole_bar else ET.SubElement(r_note, "rest")
+    ET.SubElement(r_note, "duration").text = str(dur)
+    ET.SubElement(r_note, "voice").text = "1"
+    if not whole_bar:
+        add_type_and_dot(r_note, dur, triplet)
+    if tuplet:
+        _add_tuplet(ET.SubElement(r_note, "notations"), tuplet)
+
+
+def _add_tuplet(notations: ET.Element, tuplet: str):
+    """tuplet: 'start', 'stop' or 'start stop' (a bracket over one triplet beat)."""
+    for kind in tuplet.split():
+        ET.SubElement(notations, "tuplet", type=kind, bracket="yes")
+
+
+def _bar_elements(segments: list, meter: Meter, bar_index: int, triplets: set) -> list:
+    """
+    One bar's notes and rests in order, as dicts {pos, dur, items, tie_stop, tie_start,
+    triplet, tuplet}; items None = a rest. Gaps become rests (plain values, or triplet
+    values inside a triplet beat); an empty bar is one whole-bar rest. Each triplet beat
+    gets a tuplet bracket from its first to its last element.
+    """
+    bar_start = bar_index * meter.bar
+    local = {t - bar_start // meter.beat for t in triplets
+             if bar_start <= t * meter.beat < bar_start + meter.bar}
+    if not segments:
+        return [{"pos": 0, "dur": meter.bar, "items": None, "whole_bar": True}]
+
+    elements = []
+
+    def rests(start, end):
+        for pos, length, in_triplet in _spans(start, end, meter.bar, meter.beat, local):
+            chunks = decompose_triplet(length) if in_triplet else rest_values(pos, length, meter.rest_sizes)
+            for chunk in chunks:
+                elements.append({"pos": pos, "dur": chunk, "items": None})
+                pos += chunk
+
+    cursor = 0
+    for slot, items, dur, tie_stop, tie_start in segments:
+        if slot > cursor:
+            rests(cursor, slot)
+        elements.append({"pos": slot, "dur": dur, "items": items, "tie_stop": tie_stop, "tie_start": tie_start})
+        cursor = slot + dur
+    if cursor < meter.bar:
+        rests(cursor, meter.bar)
+
+    for e in elements:
+        e["triplet"] = e["pos"] // meter.beat in local
+    for b in local:
+        inside = [e for e in elements if e["pos"] // meter.beat == b]
+        if inside:
+            inside[0]["tuplet"] = "start"
+            inside[-1]["tuplet"] = "stop" if len(inside) > 1 else "start stop"
+    return elements
 
 
 def _append_note(measure_el: ET.Element, note, string_num, fret_num, dur: int, chord: bool,
                  fifths: int = 0, drum_part_id: str = None,
-                 tie_stop: bool = False, tie_start: bool = False, lyric: tuple = None):
+                 tie_stop: bool = False, tie_start: bool = False, lyric: tuple = None,
+                 triplet: bool = False, tuplet: str = None):
     """
     Appends one pitched (or, for drum parts, unpitched) note with optional string/fret,
-    ties and a (text, syllabic) lyric.
+    ties, a (text, syllabic) lyric, and for a note in a triplet beat its 3:2 ratio and
+    (on the beat's first / last element) the tuplet bracket.
     """
     n_el = ET.SubElement(measure_el, "note")
     if chord:
@@ -513,17 +658,19 @@ def _append_note(measure_el: ET.Element, note, string_num, fret_num, dur: int, c
     if drum_part_id:
         ET.SubElement(n_el, "instrument", id=f"{drum_part_id}-I{note.pitch}")
     ET.SubElement(n_el, "voice").text = "1"
-    add_type_and_dot(n_el, dur)
+    add_type_and_dot(n_el, dur, triplet)
     if notehead:
         ET.SubElement(n_el, "notehead").text = notehead
 
     has_tab = string_num is not None and fret_num is not None
-    if tie_stop or tie_start or has_tab:
+    if tie_stop or tie_start or has_tab or tuplet:
         notations = ET.SubElement(n_el, "notations")
         if tie_stop:
             ET.SubElement(notations, "tied", type="stop")
         if tie_start:
             ET.SubElement(notations, "tied", type="start")
+        if tuplet:
+            _add_tuplet(notations, tuplet)
     # Tablature notation for string & fret
     if has_tab:
         tech = ET.SubElement(notations, "technical")
@@ -563,7 +710,8 @@ def _add_score_part(part_list: ET.Element, part_key: str, pid: str, pname: str, 
 
 
 def _add_first_measure_attributes(measure_el: ET.Element, ptype: str, divisions: int,
-                                  fifths: int, mode: str, octave_down: bool = True):
+                                  fifths: int, mode: str, octave_down: bool = True,
+                                  time_signature: tuple = (4, 4)):
     attrib = ET.SubElement(measure_el, "attributes")
     ET.SubElement(attrib, "divisions").text = str(divisions)
 
@@ -573,8 +721,8 @@ def _add_first_measure_attributes(measure_el: ET.Element, ptype: str, divisions:
         ET.SubElement(key_el, "mode").text = mode
 
     time_el = ET.SubElement(attrib, "time")
-    ET.SubElement(time_el, "beats").text = "4"
-    ET.SubElement(time_el, "beat-type").text = "4"
+    ET.SubElement(time_el, "beats").text = str(time_signature[0])
+    ET.SubElement(time_el, "beat-type").text = str(time_signature[1])
 
     clef = ET.SubElement(attrib, "clef")
     if ptype == "drum":
@@ -601,14 +749,20 @@ def _add_first_measure_attributes(measure_el: ET.Element, ptype: str, divisions:
         ET.SubElement(staff_tuning, "tuning-octave").text = str(octave)
 
 
-def _add_tempo(measure_el: ET.Element, bpm: float, playback: float = None):
-    """The printed tempo mark (the song's average) and the tempo bar 1 plays at."""
+def _add_tempo(measure_el: ET.Element, bpm: float, playback: float = None, compound: bool = False):
+    """
+    The printed tempo mark (the song's average beats per minute; a dotted quarter in
+    compound meter) and the tempo bar 1 plays at (<sound tempo> counts quarter notes).
+    """
     direction = ET.SubElement(measure_el, "direction", placement="above")
     direction_type = ET.SubElement(direction, "direction-type")
     metronome = ET.SubElement(direction_type, "metronome")
     ET.SubElement(metronome, "beat-unit").text = "quarter"
+    if compound:
+        ET.SubElement(metronome, "beat-unit-dot")
     ET.SubElement(metronome, "per-minute").text = str(int(round(bpm)))
-    ET.SubElement(direction, "sound", tempo=f"{playback or bpm:.2f}")
+    quarters = 1.5 if compound else 1.0
+    ET.SubElement(direction, "sound", tempo=f"{(playback or bpm) * quarters:.2f}")
 
 
 class Timeline:
@@ -625,7 +779,7 @@ class Timeline:
         self.index = np.arange(len(self.beats), dtype=float)
         self.beats_per_bar = beats_per_bar
         d = self.beat_position(downbeat)
-        slack = 0.5 * SIXTEENTH / DIVISIONS
+        slack = 0.5 * SIXTEENTH / QUARTER
         self.origin = d + beats_per_bar * np.floor((self.beat_position(earliest) - d + slack) / beats_per_bar)
 
     def beat_position(self, t: float) -> float:
@@ -645,9 +799,16 @@ class Timeline:
             return b[-1] + (beat - len(b) + 1) * (b[-1] - b[-2])
         return float(np.interp(beat, self.index, b))
 
+    def beats_from_start(self, t: float) -> float:
+        """Position of time t in beats from the start of bar 1."""
+        return self.beat_position(t) - self.origin
+
+    def grid(self, beat_divisions: int = QUARTER):
+        """time -> score position in divisions from the start of bar 1."""
+        return lambda t: self.beats_from_start(t) * beat_divisions
+
     def to_grid(self, t: float) -> float:
-        """Score position of time t in divisions from the start of bar 1."""
-        return (self.beat_position(t) - self.origin) * DIVISIONS
+        return self.beats_from_start(t) * QUARTER
 
     def bar_tempo(self, bar_number: int) -> float:
         first = self.origin + self.beats_per_bar * (bar_number - 1)
@@ -667,7 +828,8 @@ def build_musicxml_score(
     downbeat: float = 0.0,
     vocal_midi_path: str = "",
     lyrics: list = None,
-    beats: list = None
+    beats: list = None,
+    beats_per_bar: int = BEATS_PER_BAR
 ) -> str:
     """
     Combines transcribed MIDIs into a clean, multi-part or single-part MusicXML score
@@ -676,6 +838,9 @@ def build_musicxml_score(
     `beats` (the time of every beat, the downbeat among them) the grid follows the
     band's tempo beat by beat; otherwise it runs steadily at `bpm`. The printed tempo
     is `bpm` (the average); where the bars drift from it, playback tempo follows.
+    Bars hold `beats_per_bar` beats; beats whose notes divide them in three are written
+    as triplets, and a song where most beats do so is written in compound meter
+    (6/8, 9/8, 12/8).
     The vocal melody (part 'vocals') is written with guitar TAB for the notes a guitar
     can play, and `lyrics` ([{"start", "pitch", "text", "syllabic"}], matched to the
     vocal MIDI notes by onset and pitch) under its notes.
@@ -746,8 +911,6 @@ def build_musicxml_score(
     bpm = max(45.0, min(240.0, float(bpm)))
     seconds_per_beat = 60.0 / bpm
     divisions = DIVISIONS
-    bar_divisions = BAR_DIVISIONS
-    seconds_per_div = seconds_per_beat / divisions
 
     # Snap every part onto one global grid whose bar lines fall on the downbeats
     notes_all = [n if ptype == "drum" else n[0] for *_, data, ptype in parts_info for n in data]
@@ -756,20 +919,40 @@ def build_musicxml_score(
     if beats is None or len(beats) < 4:
         beats = constant_beats(bpm, downbeat, min(earliest, downbeat) - 8 * seconds_per_beat,
                                max(latest, downbeat) + 8 * seconds_per_beat)
-    timeline = Timeline(beats, downbeat, earliest)
+    timeline = Timeline(beats, downbeat, earliest, beats_per_bar)
+
+    # Beats divided in three: triplets, or compound meter when most beats are
+    part_onsets = []
+    for *_, data, ptype in parts_info:
+        starts = sorted(n.start if ptype == "drum" else n[0].start for n in data)
+        starts = [t for k, t in enumerate(starts) if k == 0 or t - starts[k - 1] > 0.035]
+        part_onsets.append([timeline.beats_from_start(t) for t in starts])
+    part_triplets = [triplet_beats(onsets) for onsets in part_onsets]
+    inner_beats = sum(len({int(np.floor(p + 0.04)) for p in onsets if 0.04 < p - np.floor(p + 0.04) < 0.96})
+                      for onsets in part_onsets)
+    ternary = sum(len(t) for t in part_triplets)
+    compound = ternary >= 8 and ternary >= COMPOUND_SHARE * inner_beats
+    meter = Meter(beats_per_bar, compound)
+    if compound:
+        part_triplets = [set() for _ in part_triplets]  # the meter itself divides beats in three
+    to_grid = timeline.grid(meter.beat)
 
     part_segments = []
-    last_slot = int(round(2.0 / seconds_per_div))  # at least ~2 s of score
-    for part_key, pid, pname, pabbr, data, ptype in parts_info:
+    last_slot = int(round(2.0 / seconds_per_beat * meter.beat))  # at least ~2 s of score
+    for (part_key, pid, pname, pabbr, data, ptype), triplets in zip(parts_info, part_triplets):
         items = [(n, None, None) for n in data] if ptype == "drum" else data
-        events = quantize_onsets(items, merge_same_slot=(ptype == "drum"), to_grid=timeline.to_grid)
-        segments, end_slot = split_into_bars(events, bar_divisions, tie=(ptype != "drum"))
+        events = quantize_onsets(items, merge_same_slot=(ptype == "drum"), to_grid=to_grid,
+                                 beat=meter.beat, triplets=triplets)
+        segments, end_slot = split_into_bars(events, meter.bar, tie=(ptype != "drum"),
+                                             beat=meter.beat, triplets=triplets)
         last_slot = max(last_slot, end_slot)
         part_segments.append(segments)
 
-    total_bars = max(1, int(np.ceil(last_slot / bar_divisions)))
+    total_bars = max(1, int(np.ceil(last_slot / meter.bar)))
+    quarters_per_beat = meter.beat / QUARTER
 
-    for part_idx, ((part_key, pid, pname, pabbr, data, ptype), segments) in enumerate(zip(parts_info, part_segments)):
+    for part_idx, ((part_key, pid, pname, pabbr, data, ptype), segments, triplets) in enumerate(
+            zip(parts_info, part_segments, part_triplets)):
         part_el = ET.SubElement(score, "part", id=pid)
         drum_part_id = pid if ptype == "drum" else None
 
@@ -778,33 +961,31 @@ def build_musicxml_score(
 
             if bar_num == 1:
                 _add_first_measure_attributes(measure_el, ptype, divisions, fifths, mode,
-                                              octave_down=(ptype != "vocal" or low_voice))
+                                              octave_down=(ptype != "vocal" or low_voice),
+                                              time_signature=meter.time_signature)
             if part_idx == 0:
                 bar_tempo = timeline.bar_tempo(bar_num)
                 if bar_num == 1:
-                    _add_tempo(measure_el, bpm, playback=bar_tempo)
+                    _add_tempo(measure_el, bpm, playback=bar_tempo, compound=meter.compound)
                     playing = bar_tempo
                 elif abs(bar_tempo / playing - 1) >= TEMPO_CHANGE:
-                    ET.SubElement(measure_el, "sound", tempo=f"{bar_tempo:.2f}")
+                    ET.SubElement(measure_el, "sound", tempo=f"{bar_tempo * quarters_per_beat:.2f}")
                     playing = bar_tempo
 
-            cursor = 0
-            for slot, slot_items, dur, tie_stop, tie_start in segments.get(bar_num, []):
-                # Fill rest gap before this note slot using standard rest durations
-                if slot > cursor:
-                    _append_rests(measure_el, slot - cursor, cursor)
-                for idx, (n_obj, s_num, f_num) in enumerate(slot_items):
+            # Notes, and rests filling the gaps (a whole-bar rest if it held no notes)
+            for e in _bar_elements(segments.get(bar_num, []), meter, bar_num - 1, triplets):
+                if e["items"] is None:
+                    _append_rest(measure_el, e["dur"], e.get("triplet", False), e.get("tuplet"),
+                                 e.get("whole_bar", False))
+                    continue
+                for idx, (n_obj, s_num, f_num) in enumerate(e["items"]):
                     lyric = None
-                    if ptype == "vocal" and idx == 0 and not tie_stop:
+                    if ptype == "vocal" and idx == 0 and not e["tie_stop"]:
                         lyric = lyric_map.get((round(n_obj.start, 3), n_obj.pitch))
-                    _append_note(measure_el, n_obj, s_num, f_num, dur, chord=idx > 0,
+                    _append_note(measure_el, n_obj, s_num, f_num, e["dur"], chord=idx > 0,
                                  fifths=fifths, drum_part_id=drum_part_id,
-                                 tie_stop=tie_stop, tie_start=tie_start, lyric=lyric)
-                cursor = slot + dur
-
-            # Fill the rest of the bar (a whole-bar rest if it held no notes)
-            if cursor < bar_divisions:
-                _append_rests(measure_el, bar_divisions - cursor, cursor)
+                                 tie_stop=e["tie_stop"], tie_start=e["tie_start"], lyric=lyric,
+                                 triplet=e["triplet"], tuplet=e.get("tuplet") if idx == 0 else None)
 
     tree = ET.ElementTree(score)
     ET.indent(tree, space="  ", level=0)

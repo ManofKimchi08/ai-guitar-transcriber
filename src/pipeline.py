@@ -270,7 +270,8 @@ def run_pipeline(
 
     beat_map = analyze_beat_map(input_path)
     bpm, downbeat = beat_map["bpm"], beat_map["downbeat"]
-    log(f"  ✓ 곡 템포 자동 분석: 평균 {bpm:.1f} BPM, 첫 강박 {downbeat:.2f}초 (마디선이 박을 따라감)")
+    log(f"  ✓ 곡 템포 자동 분석: 평균 {bpm:.1f} BPM, {beat_map['beats_per_bar']}박 마디, "
+        f"첫 강박 {downbeat:.2f}초 (마디선이 박을 따라감)")
 
     part_suffix = "" if sorted(selected_parts) == sorted(DEFAULT_PARTS) else f"_{'_'.join(selected_parts)}"
     score_xml = os.path.join(score_dir, f"{song_title}{part_suffix}_score.musicxml")
@@ -285,6 +286,7 @@ def run_pipeline(
         bpm=bpm,
         downbeat=downbeat,
         beats=beat_map["beats"],
+        beats_per_bar=beat_map["beats_per_bar"],
         vocal_midi_path=midi_paths.get("vocals", ""),
         lyrics=vocal_lyrics
     )

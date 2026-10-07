@@ -1,7 +1,7 @@
 """
 Tests for the beat map on synthetic band audio with known beat times: bar lines that
-follow a drifting tempo, the tempo octave (eighth-note or half-time tracking), and the
-score's playback tempo following the bars.
+follow a drifting tempo, the tempo octave (eighth-note or half-time tracking), bars of
+3 (a waltz) against bars of 4, and the score's playback tempo following the bars.
 """
 
 import os
@@ -54,6 +54,32 @@ def band(beats, seed=0):
     return y / np.max(np.abs(y))
 
 
+def waltz(beats, seed=0):
+    """Oom-pah-pah: kick and bass on 1, snare and chord on 2 and 3, a new chord every bar."""
+    rng = np.random.default_rng(seed)
+    y = np.zeros(int((beats[-1] + 2.0) * SR))
+
+    def add(sig, t):
+        i = int(t * SR)
+        y[i:i + len(sig)] += sig[:max(0, len(y) - i)]
+
+    tt = np.arange(int(0.25 * SR)) / SR
+    kick = 0.9 * np.sin(2 * np.pi * (50 + 60 * np.exp(-30 * tt)) * tt) * np.exp(-12 * tt)
+    snare = 0.4 * rng.standard_normal(len(tt)) * np.exp(-18 * tt) + 0.2 * np.sin(2 * np.pi * 200 * tt) * np.exp(-20 * tt)
+    chords = [(36, (48, 52, 55)), (31, (43, 47, 50)), (33, (45, 48, 52)), (29, (41, 45, 48))]
+    period = np.diff(beats, append=2 * beats[-1] - beats[-2])
+    for j, t in enumerate(beats):
+        root, triad = chords[(j // 3) % 4]
+        bt = np.arange(int(period[j] * SR)) / SR
+        if j % 3 == 0:
+            add(kick, t)
+            add(0.5 * np.sin(2 * np.pi * pretty_midi.note_number_to_hz(root) * np.arange(int(3 * period[j] * SR)) / SR), t)
+        else:
+            add(snare, t)
+            add(sum(0.1 * np.sin(2 * np.pi * pretty_midi.note_number_to_hz(p + 12) * bt) * np.exp(-3 * bt) for p in triad), t)
+    return y / np.max(np.abs(y))
+
+
 def write(name, y):
     os.makedirs(OUT_DIR, exist_ok=True)
     path = os.path.join(OUT_DIR, name + ".wav")
@@ -89,12 +115,14 @@ class TestBeatMap(unittest.TestCase):
             build_musicxml_score("", "", mid, "", xml, selected_parts=["lead"], bpm=beat_map["bpm"],
                                  downbeat=beat_map["downbeat"], beats=beat_map["beats"])
 
+            root = ET.parse(xml).getroot()
+            divisions = int(root.findtext(".//divisions"))
             written = []
-            for m in ET.parse(xml).getroot().find("part").findall("measure"):
+            for m in root.find("part").findall("measure"):
                 pos = 0
                 for note in m.findall("note"):
                     if note.find("rest") is None and note.find("tie") is None:
-                        written.append((int(m.get("number")), pos / 8))
+                        written.append((int(m.get("number")), pos / divisions))
                     pos += int(note.findtext("duration"))
             self.assertEqual(written, want, name)
 
@@ -107,6 +135,18 @@ class TestBeatMap(unittest.TestCase):
             bar = 4 * 60.0 / bpm
             error = (beat_map["downbeat"] - beats[0] + bar / 2) % bar - bar / 2
             self.assertLess(abs(error), 0.03, f"{bpm} BPM downbeat off by {error:.3f}s")
+
+    def test_bars_of_three_or_four(self):
+        """A waltz gets bars of 3 on its downbeat; a 4/4 groove keeps bars of 4."""
+        for bpm in (90, 150):
+            beats = beat_times(np.full(48, float(bpm)))
+            beat_map = analyze_beat_map(write(f"waltz_{bpm}", waltz(beats, seed=bpm)))
+            self.assertEqual(beat_map["beats_per_bar"], 3, f"waltz at {bpm} BPM")
+            bar = 3 * 60.0 / bpm
+            error = (beat_map["downbeat"] - beats[0] + bar / 2) % bar - bar / 2
+            self.assertLess(abs(error), 0.03, f"waltz at {bpm} BPM downbeat off by {error:.3f}s")
+        groove = analyze_beat_map(write("groove_4", band(beat_times(np.full(48, 110.0)), seed=4)))
+        self.assertEqual(groove["beats_per_bar"], 4)
 
     def test_playback_tempo_follows_the_bars(self):
         """The printed tempo is the average; bars that drift from it get their own playback tempo."""
