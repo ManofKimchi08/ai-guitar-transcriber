@@ -8,6 +8,7 @@ from tkinter import messagebox
 import customtkinter as ctk
 
 from src.lyrics_editor import ScoreLyricsEditor
+from src import ui_theme as theme
 
 
 class LyricsEditorDialog(ctk.CTkToplevel):
@@ -59,7 +60,7 @@ class LyricsEditorDialog(ctk.CTkToplevel):
             top,
             text="음표마다 한 음절씩 입력합니다. 단어가 다음 음표로 이어지면 끝에 '-'를 붙이세요 "
                  "(예: beau-, ti-, ful). 칸을 비우면 그 음표의 가사가 지워집니다.",
-            font=ctk.CTkFont(size=12), text_color="gray75", wraplength=700, justify="left"
+            font=ctk.CTkFont(size=12), text_color=theme.MUTED, wraplength=700, justify="left"
         ).pack(anchor="w", padx=16, pady=(0, 8))
 
         nav = ctk.CTkFrame(top, fg_color="transparent")
@@ -135,7 +136,7 @@ class LyricsEditorDialog(ctk.CTkToplevel):
         notes = self.editor.get_measure_lyrics(self.current_part_id, measure)
         if not notes:
             ctk.CTkLabel(self.scroll_notes, text="이 마디에는 부르는 음표가 없습니다 (쉼표).",
-                         text_color="gray60").pack(padx=10, pady=25)
+                         text_color=theme.MUTED).pack(padx=10, pady=25)
         for idx, note in enumerate(notes):
             row = ctk.CTkFrame(self.scroll_notes, fg_color="transparent")
             row.pack(fill="x", padx=6, pady=3)
@@ -158,7 +159,7 @@ class LyricsEditorDialog(ctk.CTkToplevel):
         self.editor.set_measure_lyrics(self.current_part_id, self.current_measure, texts)
         self.entries = [(entry, entry.get()) for entry, _ in self.entries]
         self.unsaved_changes = True
-        self.lbl_status.configure(text=f"✓ 마디 {self.current_measure} 가사 반영됨 (저장 필요)", text_color="#34C759")
+        self.lbl_status.configure(text=f"✓ 마디 {self.current_measure} 가사 반영됨 (저장 필요)", text_color=theme.SUCCESS)
         self._refresh_overview()
         return True
 
@@ -173,20 +174,20 @@ class LyricsEditorDialog(ctk.CTkToplevel):
         self._apply_current()
         saved = self.editor.save_xml()
         self.unsaved_changes = False
-        self.lbl_status.configure(text=f"💾 저장 완료: {os.path.basename(saved)}", text_color="#34C759")
+        self.lbl_status.configure(text=f"💾 저장 완료: {os.path.basename(saved)}", text_color=theme.SUCCESS)
         if show_dialog:
             messagebox.showinfo("저장 완료", f"가사가 악보에 저장되었습니다:\n{saved}", parent=self)
         return saved
 
     def _save_and_reexport_pdf(self):
         self._save(show_dialog=False)
-        self.lbl_status.configure(text="⏳ PDF 악보 재출력 중 (LilyPond)...", text_color="#FF9500")
+        self.lbl_status.configure(text="⏳ PDF 악보 재출력 중 (LilyPond)...", text_color=theme.WARNING)
         self.update()
         pdf_path = self.editor.reexport_pdf(style=self.style)
         if not pdf_path or not os.path.exists(pdf_path):
-            self.lbl_status.configure(text="❌ PDF 생성에 실패했습니다.", text_color="#E05252")
+            self.lbl_status.configure(text="❌ PDF 생성에 실패했습니다.", text_color=theme.DANGER)
             return
-        self.lbl_status.configure(text=f"🎉 PDF 갱신 완료: {os.path.basename(pdf_path)}", text_color="#34C759")
+        self.lbl_status.configure(text=f"🎉 PDF 갱신 완료: {os.path.basename(pdf_path)}", text_color=theme.SUCCESS)
         if self.pdf_callback:
             self.pdf_callback(pdf_path)
         if hasattr(os, "startfile") and messagebox.askyesno("PDF 갱신 완료", "수정된 가사가 반영된 PDF를 열어볼까요?", parent=self):

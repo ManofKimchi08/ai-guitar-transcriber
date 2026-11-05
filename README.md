@@ -296,6 +296,9 @@ ai_band_transcriber/
 │
 ├── src/                       # 핵심 오디오 분석 및 채보 엔진
 │   ├── pipeline.py            # CLI·GUI 공용 변환 파이프라인 (곡별 출력 폴더)
+│   ├── cancellation.py        # 변환 취소 (GUI 취소 버튼 → 다음 진행 보고에서 중단, Demucs 종료)
+│   ├── gui_state.py           # GUI 설정 저장(gui_settings.json)·변환한 곡 목록
+│   ├── ui_theme.py            # GUI 색상 (Windows 라이트/다크 모드를 따름)
 │   ├── separator.py           # Meta Demucs 6-stem 음원 분리
 │   ├── guitar_splitter.py     # 스테레오 위치(센터 추출) 기반 Lead / Rhythm 기타 분리
 │   ├── pitch_transcriber.py   # TorchCREPE GPU 고정밀 F0 피치 트래커

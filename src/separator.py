@@ -47,22 +47,28 @@ def run_streaming(cmd: list, env: dict = None, log=print, progress=None,
     threading.Thread(target=watchdog, daemon=True).start()
 
     lines, last_logged = [], -10
-    for raw in proc.stdout:  # universal newlines: tqdm's \r updates arrive as lines
-        last_output[0] = time.time()
-        line = raw.strip()
-        if not line:
-            continue
-        lines.append(line)
-        m = re.search(r"(\d{1,3})%\|", line)
-        if m:
-            pct = int(m.group(1))
-            if progress:
-                progress(pct / 100.0)
-            if pct >= last_logged + 10:
-                log(f"   진행률 {pct}%")
-                last_logged = pct
-        else:
-            log(f"   {line}")
+    try:
+        for raw in proc.stdout:  # universal newlines: tqdm's \r updates arrive as lines
+            last_output[0] = time.time()
+            line = raw.strip()
+            if not line:
+                continue
+            lines.append(line)
+            m = re.search(r"(\d{1,3})%\|", line)
+            if m:
+                pct = int(m.group(1))
+                if progress:
+                    progress(pct / 100.0)
+                if pct >= last_logged + 10:
+                    log(f"   진행률 {pct}%")
+                    last_logged = pct
+            else:
+                log(f"   {line}")
+    except BaseException:
+        # A callback raised (the run was cancelled): don't leave the process running
+        proc.kill()
+        proc.wait()
+        raise
     proc.wait()
 
     output = "\n".join(lines)

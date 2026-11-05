@@ -9,6 +9,7 @@ import os
 import time
 from pathlib import Path
 
+from src.cancellation import PipelineCancelled, cancellable
 from src.separator import separate_stems
 from src.guitar_splitter import split_guitar_track
 from src.drum_transcriber import transcribe_drums
@@ -108,7 +109,8 @@ def run_pipeline(
     lyrics: bool = True,
     lyrics_language: str = None,
     log=print,
-    progress=None
+    progress=None,
+    cancel=None
 ) -> dict:
     """
     Runs the full transcription pipeline for one song.
@@ -125,12 +127,16 @@ def run_pipeline(
         lyrics_language: Whisper language code ('ko', 'en', 'ja', ...); None detects it.
         log: Called with each log line.
         progress: Called as progress(status_text, fraction) at each stage.
+        cancel: Optional threading.Event; once set, the run stops at its next log or
+            progress update (a running Demucs is killed) by raising PipelineCancelled.
 
     Returns:
         dict with song_title, song_dir, score_xml, pdf_path, lyrics_txt, bpm, downbeat,
         midi_paths, elapsed.
     """
     progress = progress or (lambda text, fraction: None)
+    if cancel is not None:
+        log, progress = cancellable(log, cancel), cancellable(progress, cancel)
     start_time = time.time()
     out_root = os.path.abspath(output_dir)
     os.makedirs(out_root, exist_ok=True)

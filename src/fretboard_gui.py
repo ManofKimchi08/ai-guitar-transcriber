@@ -11,6 +11,7 @@ from tkinter import messagebox
 import customtkinter as ctk
 
 from src.fretboard_editor import ScoreFretEditor, find_alternative_positions, pitch_to_name
+from src import ui_theme as theme
 
 
 class FretboardEditorDialog(ctk.CTkToplevel):
@@ -65,7 +66,7 @@ class FretboardEditorDialog(ctk.CTkToplevel):
             top_frame,
             text="특정 음표를 선택하면 동일한 음정이 나는 지판 위의 모든 대안 자리(동음이현)를 안내합니다. 원하는 자리를 클릭하여 운지를 변경하세요.",
             font=ctk.CTkFont(size=12),
-            text_color="gray75"
+            text_color=theme.MUTED
         )
         desc_lbl.pack(anchor="w", padx=16, pady=(0, 8))
 
@@ -84,7 +85,7 @@ class FretboardEditorDialog(ctk.CTkToplevel):
             file_frame,
             text=os.path.basename(self.xml_path),
             font=ctk.CTkFont(size=13, weight="bold"),
-            text_color="#34C759"
+            text_color=theme.SUCCESS
         )
         self.lbl_file_name.pack(side="left", padx=4, pady=6)
 
@@ -92,7 +93,7 @@ class FretboardEditorDialog(ctk.CTkToplevel):
             file_frame,
             text=f"({self.xml_path})",
             font=ctk.CTkFont(size=11),
-            text_color="gray60"
+            text_color=theme.MUTED
         )
         self.lbl_file_path.pack(side="left", padx=(4, 12), pady=6)
 
@@ -194,7 +195,7 @@ class FretboardEditorDialog(ctk.CTkToplevel):
             left_frame,
             text="마디 1 (0개 음표)",
             font=ctk.CTkFont(size=11),
-            text_color="gray70"
+            text_color=theme.MUTED
         )
         self.lbl_measure_info.pack(anchor="w", padx=14, pady=(0, 6))
 
@@ -220,7 +221,7 @@ class FretboardEditorDialog(ctk.CTkToplevel):
             self.card_note_info,
             text="현재 운지: 없음",
             font=ctk.CTkFont(size=13),
-            text_color="gray75"
+            text_color=theme.MUTED
         )
         self.lbl_sel_fret.pack(anchor="w", padx=14, pady=(0, 8))
 
@@ -284,7 +285,7 @@ class FretboardEditorDialog(ctk.CTkToplevel):
         self._load_initial_part()
         self.lbl_save_status.configure(
             text=f"새 파일 로드 완료: {os.path.basename(self.xml_path)}",
-            text_color="#34C759"
+            text_color=theme.SUCCESS
         )
 
     def _load_initial_part(self):
@@ -354,7 +355,7 @@ class FretboardEditorDialog(ctk.CTkToplevel):
             lbl_empty = ctk.CTkLabel(
                 self.scroll_notes,
                 text="해당 마디에 연주 음표가 없습니다.\n(쉼표 구간)",
-                text_color="gray60"
+                text_color=theme.MUTED
             )
             lbl_empty.pack(padx=10, pady=25)
             self.selected_note_idx = -1
@@ -478,7 +479,7 @@ class FretboardEditorDialog(ctk.CTkToplevel):
             self._update_note_display()
             self.lbl_save_status.configure(
                 text=f"✓ 마디 {self.current_measure} #{self.selected_note_idx + 1} 음표가 [{new_string}번 줄 {new_fret}프렛]으로 변경되었습니다! (저장 필요)",
-                text_color="#34C759"
+                text_color=theme.SUCCESS
             )
 
     def _draw_fretboard(self):
@@ -666,7 +667,7 @@ class FretboardEditorDialog(ctk.CTkToplevel):
         self.unsaved_changes = 0
         self.lbl_save_status.configure(
             text=f"💾 악보 저장 완료: {os.path.basename(saved_path)}",
-            text_color="#34C759"
+            text_color=theme.SUCCESS
         )
         if show_dialog:
             messagebox.showinfo("저장 완료", f"수정된 운지가 MusicXML 악보에 성공적으로 반영되었습니다:\n{saved_path}")
@@ -739,7 +740,7 @@ class FretboardEditorDialog(ctk.CTkToplevel):
         self._save_changes(show_dialog=False)
 
         # 4. Re-compile PDF via LilyPond
-        self.lbl_save_status.configure(text="⏳ PDF 악보 재출력 중 (LilyPond)...", text_color="#FF9500")
+        self.lbl_save_status.configure(text="⏳ PDF 악보 재출력 중 (LilyPond)...", text_color=theme.WARNING)
         self.update()
 
         try:
@@ -747,7 +748,7 @@ class FretboardEditorDialog(ctk.CTkToplevel):
             if pdf_path and os.path.exists(pdf_path):
                 self.lbl_save_status.configure(
                     text=f"🎉 PDF 악보 갱신 완료: {os.path.basename(pdf_path)}",
-                    text_color="#34C759"
+                    text_color=theme.SUCCESS
                 )
                 if self.pdf_callback:
                     self.pdf_callback(pdf_path)
@@ -759,14 +760,14 @@ class FretboardEditorDialog(ctk.CTkToplevel):
                 if ans:
                     os.startfile(pdf_path)
             else:
-                self.lbl_save_status.configure(text="❌ PDF 생성에 실패했습니다.", text_color="#E05252")
+                self.lbl_save_status.configure(text="❌ PDF 생성에 실패했습니다.", text_color=theme.DANGER)
         except Exception as e:
             messagebox.showerror("오류", f"PDF 재출력 중 오류가 발생했습니다:\n{str(e)}")
 
 
 if __name__ == "__main__":
     # Test runner for standalone debugging
-    ctk.set_appearance_mode("Dark")
+    ctk.set_appearance_mode("System")
     root = ctk.CTk()
     root.title("Main Window")
     root.geometry("400x300")
