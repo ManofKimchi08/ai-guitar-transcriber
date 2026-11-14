@@ -1,97 +1,178 @@
 """
 Guitar Splitter Module
-Separates a composite guitar track into Lead Guitar and Rhythm Guitar.
-Uses Mid-Side (M/S) matrix processing for stereo double-tracked tracks,
-supplemented by spectral crossover for mono or centered recordings.
+Splits the separated guitar stem into lead and rhythm guitar by where each sound sits
+in the stereo image. In a typical band mix the rhythm guitars are double-tracked and
+panned left and right while the lead (solo) sits near the centre.
+
+Plain mid/side cannot do this: the mid (L + R) holds the lead *and* half of each side
+guitar, so the lead track was mostly rhythm guitar. Instead every time-frequency bin
+is compared between the channels: a centred sound is the same in both (same level,
+same phase), while a guitar panned to one side, or two separate takes on the two
+sides, is not. Centre bins go to the lead, the rest to the rhythm guitar.
+
+Some mixes do it the other way round (one rhythm guitar in the middle, the solo panned
+to a side), so the part that plays chords becomes the rhythm guitar.
 """
 
 import os
 import numpy as np
 import soundfile as sf
-from scipy.signal import butter, filtfilt
+import librosa
+from scipy.ndimage import uniform_filter
+
+FFT_SEC = 0.093                  # ~4096 samples at 44.1 kHz: fine frequency resolution keeps
+                                 # lead and chord partials apart
+SMOOTH = (3, 3)                  # bins x frames compared together
+# ...and over this long a stretch too: two takes of the same chords line up in phase
+# now and then (and look centred for a moment), a centred lead stays centred
+LONG_SEC = 0.4
+# Channel similarity -> centre mask, soft in between: a sound panned up to ~25% off
+# centre still counts as centred, rhythm guitars panned ~60% or more do not
+CENTER_LO, CENTER_HI = 0.85, 0.98
+MONO_SIDE_RATIO = 0.01           # side/mid energy below this: no stereo image to split by
+ABSENT_RATIO = 0.03              # a part with less than this share of the energy is absent
+BLOCK_SEC = 30.0                 # processed in blocks: a 4-minute stem in one go needs ~1 GB
+PAD_SEC = 1.0                    # context around each block, far beyond the STFT window
+SWAP_MARGIN = 1.0                # centre this many more pitch classes per frame than the sides: it holds the chords
 
 
-def butter_filter(data, cutoff, fs, btype='low', order=4):
-    """Applies a Butterworth lowpass or highpass filter."""
-    nyq = 0.5 * fs
-    normal_cutoff = cutoff / nyq
-    b, a = butter(order, normal_cutoff, btype=btype, analog=False)
-    return filtfilt(b, a, data, axis=0)
+def channel_similarity(left_spec: np.ndarray, right_spec: np.ndarray, long_frames: int = 0) -> np.ndarray:
+    """
+    Per time-frequency bin, how alike the channels are, 0..1: 1 for a centred sound,
+    2ab/(a^2+b^2) for one panned with gains a, b, and ~0 for unrelated sounds in the
+    two channels. Uses the real part of the cross-spectrum, so equal-level sounds with
+    different phases (two takes of one part) do not count as centred. With
+    `long_frames`, the lower of the short-range and the long-range similarity: a
+    moment where two takes happen to line up in phase is not enough to be centred.
+    """
+    power = np.abs(left_spec) ** 2 + np.abs(right_spec) ** 2
+    cross = np.real(left_spec * np.conj(right_spec))
+
+    def similarity(size):
+        return np.clip(2 * uniform_filter(cross, size) / (uniform_filter(power, size) + 1e-12), 0.0, 1.0)
+
+    short = similarity(SMOOTH)
+    return np.minimum(short, similarity((SMOOTH[0], long_frames))) if long_frames > SMOOTH[1] else short
+
+
+def center_mask(similarity: np.ndarray) -> np.ndarray:
+    """Soft mask, 1 for centred bins and 0 for panned ones."""
+    x = np.clip((similarity - CENTER_LO) / (CENTER_HI - CENTER_LO), 0.0, 1.0)
+    return x * x * (3 - 2 * x)  # smoothstep
+
+
+def fft_size(sr: int) -> int:
+    return 2 ** int(round(np.log2(FFT_SEC * sr)))
+
+
+def _split_block(left: np.ndarray, right: np.ndarray, n_fft: int, long_frames: int = 0) -> tuple:
+    hop = n_fft // 4
+    L = librosa.stft(left, n_fft=n_fft, hop_length=hop)
+    R = librosa.stft(right, n_fft=n_fft, hop_length=hop)
+    mask = center_mask(channel_similarity(L, R, long_frames))
+    n = len(left)
+    center = librosa.istft(mask * 0.5 * (L + R), hop_length=hop, length=n)
+    side_l = librosa.istft((1 - mask) * L, hop_length=hop, length=n)
+    side_r = librosa.istft((1 - mask) * R, hop_length=hop, length=n)
+    return center, side_l, side_r
+
+
+def split_center_sides(left: np.ndarray, right: np.ndarray, sr: int, strict_center: bool = True) -> tuple:
+    """
+    Centre (mono) and sides (stereo) of a stereo signal. The sides keep their two
+    channels: two takes left and right add up when downmixed, while a [side, -side]
+    pair would cancel to silence. `strict_center` also asks the centre to stay centred
+    over LONG_SEC (keeps panned takes out of a centred lead); without it, what is
+    centred for a moment counts (keeps a centred rhythm guitar out of a panned lead).
+    """
+    n = len(left)
+    n_fft = fft_size(sr)
+    hop = n_fft // 4
+    long_frames = int(round(LONG_SEC * sr / hop)) | 1 if strict_center else 0
+    block, pad = int(BLOCK_SEC * sr) // hop * hop, int(PAD_SEC * sr)
+    center = np.zeros(n, dtype=np.float32)
+    sides = np.zeros((n, 2), dtype=np.float32)
+    for start in range(0, n, block):
+        end = min(n, start + block)
+        a, b = max(0, (start - pad) // hop * hop), min(n, end + pad)  # frames on the global grid
+        c, sl, sr_ = _split_block(left[a:b], right[a:b], n_fft, long_frames)
+        center[start:end] = c[start - a:end - a]
+        sides[start:end, 0] = sl[start - a:end - a]
+        sides[start:end, 1] = sr_[start - a:end - a]
+    return center, sides
+
+
+def chord_density(y: np.ndarray, sr: int) -> float:
+    """Strong pitch classes per loud frame: about 1-2 for a single-note line, 3-4 for chords."""
+    y = librosa.resample(y, orig_sr=sr, target_sr=11025)
+    chroma = librosa.feature.chroma_cqt(y=y, sr=11025, hop_length=512)
+    rms = librosa.feature.rms(y=y, hop_length=512)[0][:chroma.shape[1]]
+    chroma = chroma[:, :len(rms)]
+    loud = rms > 0.2 * np.percentile(rms, 95)
+    if not loud.any():
+        return 0.0
+    frames = chroma[:, loud] / (chroma[:, loud].max(axis=0, keepdims=True) + 1e-9)
+    return float(np.mean((frames > 0.5).sum(axis=0)))
+
+
+def _normalize(sig: np.ndarray) -> np.ndarray:
+    peak = np.max(np.abs(sig))
+    return sig / peak * 0.95 if peak > 1e-6 else sig
 
 
 def split_guitar_track(input_wav_path: str, output_dir: str) -> dict:
     """
-    Separates a guitar audio file into lead and rhythm components.
-    
-    Args:
-        input_wav_path: Path to the input guitar.wav
-        output_dir: Directory where lead_guitar.wav and rhythm_guitar.wav will be saved.
-        
-    Returns:
-        dict: Paths to generated files {"lead": ..., "rhythm": ...}
+    Splits a guitar stem into lead and rhythm parts.
+
+    Returns {"lead": path or None, "rhythm": path, "method": ...}; method is
+    "stereo" (centre = lead, sides = rhythm), "stereo-swapped" (the centre plays the
+    chords: sides = lead, centre = rhythm), or "mono" when the stem has no stereo image
+    to split by (both parts then get the whole guitar). "lead" is None when only one
+    guitar part is there to hear, e.g. two panned rhythm guitars and nothing between.
     """
     os.makedirs(output_dir, exist_ok=True)
     lead_path = os.path.join(output_dir, "guitar_lead.wav")
     rhythm_path = os.path.join(output_dir, "guitar_rhythm.wav")
 
-    # Read audio
-    audio, sr = sf.read(input_wav_path)
-    
-    # Handle single channel (mono) vs dual channel (stereo)
-    if audio.ndim == 1:
-        # Mono file: highpass at 80Hz for lead to eliminate sub-bass rumble while preserving full guitar range (E2=82Hz)
-        # Rhythm gets lowpass to focus on rhythm chord fundamentals
-        rhythm_audio = butter_filter(audio, 1200.0, sr, btype='low')
-        lead_audio = butter_filter(audio, 80.0, sr, btype='high')
+    audio, sr = sf.read(input_wav_path, always_2d=True, dtype="float32")
+    left, right = audio[:, 0], audio[:, -1]
+    mid = 0.5 * (left + right)
+    side = 0.5 * (left - right)
+    if np.sum(side ** 2) < MONO_SIDE_RATIO * np.sum(mid ** 2):
+        # Nothing to tell the guitars apart by: both parts get the whole guitar (the
+        # lead transcriber follows the strongest line, the chord recognizer the harmony)
+        whole = _normalize(mid)
+        sf.write(lead_path, whole, sr)
+        sf.write(rhythm_path, whole, sr)
+        return {"lead": lead_path, "rhythm": rhythm_path, "method": "mono"}
+
+    center, sides = split_center_sides(left, right, sr)
+    if np.dot(sides[:, 0], sides[:, 1]) < -0.3 * np.sum(sides ** 2) / 2:
+        sides[:, 1] *= -1  # opposite-polarity sides (a widener) would cancel when downmixed
+    center_energy = np.sum(center ** 2)
+    sides_energy = np.sum(sides.mean(axis=1) ** 2)
+    total = center_energy + sides_energy + 1e-12
+    method = "stereo"
+    if sides_energy < ABSENT_RATIO * total:
+        # Everything is centred: one guitar part, give the chord recognizer all of it
+        lead, rhythm = None, mid
+    elif center_energy < ABSENT_RATIO * total:
+        lead, rhythm = None, sides  # only bleed in the centre: no lead guitar
+    elif chord_density(center, sr) > chord_density(sides.mean(axis=1), sr) + SWAP_MARGIN:
+        # The lead is on a side: now the centre (chords) must not leak into it
+        center, sides = split_center_sides(left, right, sr, strict_center=False)
+        lead, rhythm, method = sides.mean(axis=1), center, "stereo-swapped"
     else:
-        # Stereo file: analyze stereo correlation
-        left = audio[:, 0]
-        right = audio[:, 1]
-        
-        # Calculate cross-correlation / similarity
-        norm_l = np.linalg.norm(left) + 1e-9
-        norm_r = np.linalg.norm(right) + 1e-9
-        correlation = np.dot(left, right) / (norm_l * norm_r)
-        
-        # Mid-Side transformation:
-        # Mid (Center) = (L + R) / 2  --> Center-panned lead/solo
-        # Side (Difference) = (L - R) / 2 --> Wide double-tracked rhythm guitars
-        mid = (left + right) * 0.5
-        side = (left - right) * 0.5
-        
-        energy_mid = np.mean(mid ** 2)
-        energy_side = np.mean(side ** 2)
-        
-        # If significant stereo separation exists (typical in studio rock/pop)
-        if correlation < 0.90 and energy_side > 0.05 * (energy_mid + 1e-9):
-            # Lead is center (Mid) with sub-bass cut, Rhythm is stereo side
-            lead_audio = butter_filter(mid, 80.0, sr, btype='high')
-            # Reconstruct stereo rhythm with original spatial feel
-            rhythm_audio = np.stack([side, -side], axis=1)
-        else:
-            # Low stereo separation: Hybrid M/S preserving guitar fundamental range
-            lead_audio = butter_filter(mid, 80.0, sr, btype='high') + side * 0.3
-            rhythm_low = butter_filter(mid, 1200.0, sr, btype='low')
-            rhythm_audio = np.stack([rhythm_low + side * 0.7, rhythm_low - side * 0.7], axis=1)
+        lead, rhythm = center, sides
 
-    # Normalize audio to prevent clipping
-    def normalize(sig):
-        max_val = np.max(np.abs(sig))
-        if max_val > 1e-6:
-            return sig / max_val * 0.95
-        return sig
-
-    lead_audio = normalize(lead_audio)
-    rhythm_audio = normalize(rhythm_audio)
-
-    # Save to disk
-    sf.write(lead_path, lead_audio, sr)
-    sf.write(rhythm_path, rhythm_audio, sr)
-
-    return {
-        "lead": lead_path,
-        "rhythm": rhythm_path
-    }
+    if lead is None:
+        if os.path.exists(lead_path):
+            os.remove(lead_path)  # a lead from an earlier run of this song is not this one's
+        lead_path = None
+    else:
+        sf.write(lead_path, _normalize(lead), sr)
+    sf.write(rhythm_path, _normalize(rhythm), sr)
+    return {"lead": lead_path, "rhythm": rhythm_path, "method": method}
 
 
 if __name__ == "__main__":

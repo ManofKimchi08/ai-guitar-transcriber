@@ -37,3 +37,6 @@ desktop.ini
 # Temporary files
 *.tmp
 *.log
+
+# Desktop GUI settings (saved choices)
+gui_settings.json

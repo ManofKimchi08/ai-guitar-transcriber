@@ -25,12 +25,16 @@ class Program
             return;
         }
 
-        bool venvExists = File.Exists(pythonw) || File.Exists(python);
+        // start.bat writes venv\.installed only after every package installed successfully;
+        // a venv without it is an interrupted install that would crash silently under pythonw.
+        string installedFlag = Path.Combine(baseDir, @"venv\.installed");
+        bool venvReady = (File.Exists(pythonw) || File.Exists(python)) && File.Exists(installedFlag);
 
-        if (!venvExists)
+        if (!venvReady)
         {
             DialogResult result = MessageBox.Show(
-                "AI Band Transcriber를 실행하기 위한 필수 AI 가상환경(venv)이 아직 설치되지 않았습니다.\n\n" +
+                "AI Band Transcriber를 실행하기 위한 필수 AI 가상환경(venv)이 아직 설치되지 않았거나,\n" +
+                "이전 설치가 끝까지 완료되지 않았습니다.\n\n" +
                 "[확인]을 누르시면 터미널 창이 열리며 최초 1회 자동 설치(start.bat)를 시작합니다.\n" +
                 "설치가 끝나면 프로그램이 자동으로 실행됩니다.\n\n" +
                 "자동 설치를 진행하시겠습니까?",
