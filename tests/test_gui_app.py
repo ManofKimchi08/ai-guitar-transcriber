@@ -9,6 +9,7 @@ import sys
 import tempfile
 import time
 import unittest
+import warnings
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -66,10 +67,21 @@ class TestGuiApp(unittest.TestCase):
         app_gui.SETTINGS_PATH, app_gui.OUTPUT_ROOT, app_gui.run_pipeline = self.saved
 
     def open_app(self):
-        try:
-            app = app_gui.BandTranscriberApp()
-        except tk.TclError as e:
-            self.skipTest(f"no display: {e}")
+        """Opens the window. Skips where there is no display; any other failure to open is
+        retried (Tk on Windows now and then fails to start a further interpreter) and
+        reported, so a window that cannot open is never passed over silently."""
+        app = None
+        for attempt in range(3):
+            try:
+                app = app_gui.BandTranscriberApp()
+                break
+            except tk.TclError as e:
+                if "display" in str(e).lower():
+                    self.skipTest(f"no display: {e}")
+                warnings.warn(f"the window did not open (attempt {attempt + 1}): {e}")
+                if attempt == 2:
+                    raise
+                time.sleep(0.5)
         self.addCleanup(self.close_app, app)
         app.update()
         return app
