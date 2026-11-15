@@ -55,6 +55,10 @@ class TestSongs(unittest.TestCase):
             self.assertIsNone(songs[0]["pdf"])
             self.assertTrue(songs[1]["pdf"].endswith("Old Song_TAB.pdf"))
             self.assertEqual(songs[1]["dir"], os.path.join(root, "Old Song"))
+            self.assertEqual((songs[0]["tags"], songs[1]["tags"]), ([], ["TAB"]))
+            touch(os.path.join(root, "New Song", "scores", "New Song_TAB_Score.pdf"))
+            touch(os.path.join(root, "New Song", "scores", "New Song_lyrics.txt"))
+            self.assertEqual(find_songs(root)[0]["tags"], ["TAB + 오선보", "가사"])
             self.assertEqual(find_songs(os.path.join(root, "missing")), [])
 
     def test_pdf_falls_back_to_the_newest_beside_the_score(self):
