@@ -343,6 +343,11 @@ class TestBandTranscriber(unittest.TestCase):
 
     def test_lilypond_drums_and_tab_clefs(self):
         ly = (
+            '\\layout {\n'
+            '    \\context { \\Score\n'
+            '        autoBeaming = ##f\n'
+            '        }\n'
+            '    }\n'
             'PartPOneVoiceOne =  \\relative f\' {\n'
             '    \\clef "percussion" \\time 4/4 f4 \\tempo 4=120 g\'\'4 }\n'
             'PartPTwoVoiceOne =  \\relative e,, {\n'
@@ -363,6 +368,9 @@ class TestBandTranscriber(unittest.TestCase):
         # The bass clef is removed even when it does not directly follow the opening brace
         bass_def = out[out.index("PartPTwoVoiceOne ="):out.index("\\score")]
         self.assertNotIn("\\clef", bass_def)
+        # Instrument names get room left of the staves (they ran off the page)
+        self.assertIn("\\layout {\n    indent = 30\\mm\n    short-indent = 18\\mm\n    \\context { \\Score", out)
+        self.assertEqual(out.count("indent = 30"), 1)
 
 
 if __name__ == "__main__":

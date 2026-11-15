@@ -1,0 +1,51 @@
+# Publishes a GitHub Release when a version tag (v1.3.0, ...) is pushed: the title and
+# body come from docs/releases/<tag>.md (first line = title), and the release carries a
+# ready-to-run zip of the repository with the launcher exe built from this tag's
+# Launcher.cs. Re-run it by hand ("Run workflow", with the tag) to update a release.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to publish or update, e.g. v1.3.0"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+      - name: Build AI_Band_Transcriber.exe with build_launcher.bat
+        shell: cmd
+        run: echo.| build_launcher.bat
+      - name: Zip the app with the fresh launcher
+        shell: bash
+        run: |
+          git ls-files > files.txt
+          7z a -tzip "AI_Band_Transcriber_${TAG}.zip" @files.txt -scsUTF-8
+      - name: Publish the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          notes="docs/releases/${TAG}.md"
+          test -f "$notes" || { echo "No release notes at $notes"; exit 1; }
+          title="$(head -n 1 "$notes" | sed 's/^# *//')"
+          tail -n +2 "$notes" > release_body.md
+          zip="AI_Band_Transcriber_${TAG}.zip"
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release edit "$TAG" --title "$title" --notes-file release_body.md
+            gh release upload "$TAG" "$zip" --clobber
+          else
+            gh release create "$TAG" "$zip" --verify-tag --title "$title" --notes-file release_body.md
+          fi

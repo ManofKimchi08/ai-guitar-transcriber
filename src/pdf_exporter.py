@@ -106,6 +106,9 @@ def _convert_vocals(ly_content: str, style: str, vocal_clef: str) -> str:
     return ly_content[:m.start()] + replacement + ly_content[m.end():]
 
 
+INSTRUMENT_NAME_INDENT = "\n    indent = 30\\mm\n    short-indent = 18\\mm"
+
+
 def convert_ly_to_tab_style(ly_content: str, style: str = "tab") -> str:
     """
     Transforms LilyPond Staff contexts into genuine Guitar & Bass TabStaff
@@ -117,6 +120,10 @@ def convert_ly_to_tab_style(ly_content: str, style: str = "tab") -> str:
     # musicxml2ly sometimes attaches string annotations (\1, \2, ...) to rests,
     # which crashes LilyPond's Guile interpreter with: Wrong type (expecting exact integer): ()
     ly_content = re.sub(r'([rRs]\d*[\.*]*(?:\*\d+)?)(?:\s*\\[0-9]+)+', r'\1', ly_content)
+
+    # Room for the instrument names left of the staves: with LilyPond's default indent
+    # "Rhythm Guitar" and "Rhythm (TAB)" ran off the left edge of the page
+    ly_content = re.sub(r'\\layout\s*\{', lambda m: m.group(0) + INSTRUMENT_NAME_INDENT, ly_content, count=1)
 
     # Drums: LilyPond's DrumStaff only places \drummode notes, so musicxml2ly's
     # unpitched notes would all land on the middle line. Draw the drum voice on a
