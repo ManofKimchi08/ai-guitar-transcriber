@@ -99,6 +99,10 @@ def recognize_lyrics(vocals_wav: str, vocal_midi: str, vram_profile: dict, langu
     return [{"start": n.start, "pitch": n.pitch, "text": t, "syllabic": s} for n, t, s in placed]
 
 
+# Stage keys announced through run_pipeline's `stage` callback, in order
+STAGES = ("download", "separate", "split", "transcribe", "lyrics", "score")
+
+
 def run_pipeline(
     input_audio: str,
     output_dir: str,
@@ -110,7 +114,8 @@ def run_pipeline(
     lyrics_language: str = None,
     log=print,
     progress=None,
-    cancel=None
+    cancel=None,
+    stage=None
 ) -> dict:
     """
     Runs the full transcription pipeline for one song.
@@ -129,14 +134,17 @@ def run_pipeline(
         progress: Called as progress(status_text, fraction) at each stage.
         cancel: Optional threading.Event; once set, the run stops at its next log or
             progress update (a running Demucs is killed) by raising PipelineCancelled.
+        stage: Called as stage(key) when a stage starts, with a key of STAGES; a stage
+            that does not run (no URL, reused stems, no vocals) is never announced.
 
     Returns:
         dict with song_title, song_dir, score_xml, pdf_path, lyrics_txt, bpm, downbeat,
         midi_paths, elapsed.
     """
     progress = progress or (lambda text, fraction: None)
+    stage = stage or (lambda key: None)
     if cancel is not None:
-        log, progress = cancellable(log, cancel), cancellable(progress, cancel)
+        log, progress, stage = (cancellable(fn, cancel) for fn in (log, progress, stage))
     start_time = time.time()
     out_root = os.path.abspath(output_dir)
     os.makedirs(out_root, exist_ok=True)
@@ -149,6 +157,7 @@ def run_pipeline(
         log("! 선택된 파트가 없어 기본값(리드 기타)으로 악보를 생성합니다.")
 
     if is_url(input_audio):
+        stage("download")
         progress("유튜브 음원 다운로드 및 변환 중 (최고 음질 WAV)...", 0.05)
         log(f"[*] 유튜브 링크 감지: {input_audio}")
         log("[*] yt-dlp & FFmpeg를 통해 최고 음질 오디오 추출 중...")
@@ -187,6 +196,7 @@ def run_pipeline(
     if skip_separation and all(os.path.exists(p) for p in needed):
         log("\n--- [Step 1] 기존 분리 음원 재사용 (분리 건너뜀) ---")
     else:
+        stage("separate")
         progress("1/4 단계: Meta Demucs 6-Stem 음원 분리 중 (GPU)...", 0.15)
         log("\n--- [Step 1] AI 음원 분리 (Demucs htdemucs_6s) ---")
         stems = separate_stems(
@@ -201,6 +211,7 @@ def run_pipeline(
     # -------------------------------------------------------------
     # Step 2: Split Guitar into Lead and Rhythm
     # -------------------------------------------------------------
+    stage("split")
     progress("2/4 단계: 리드 기타 / 리듬 기타 분할 중 (스테레오 위치 분석)...", 0.45)
     log("\n--- [Step 2] 기타 파트 분리 (스테레오 위치: 가운데 = 리드, 좌우 = 리듬) ---")
     lead_wav, rhythm_wav = None, None
@@ -224,6 +235,7 @@ def run_pipeline(
     # -------------------------------------------------------------
     # Step 3: Transcription to MIDI
     # -------------------------------------------------------------
+    stage("transcribe")
     progress("3/4 단계: 각 악기별 고정밀 MIDI 변환 중 (TorchCREPE & CQT Chords)...", 0.65)
     log("\n--- [Step 3] 고정밀 MIDI 전사 (TorchCREPE GPU & CQT Chords) ---")
 
@@ -258,6 +270,7 @@ def run_pipeline(
     # Lyrics for the vocal melody (optional: the melody stands on its own if this fails)
     vocal_lyrics, lyrics_txt = None, None
     if "vocals" in midi_paths and lyrics:
+        stage("lyrics")
         progress("가사 인식 중 (Whisper)...", 0.80)
         log("\n--- [Step 3+] 가사 인식 (Whisper) ---")
         try:
@@ -271,6 +284,7 @@ def run_pipeline(
     # -------------------------------------------------------------
     # Step 4: Tablature Optimization & MusicXML / PDF
     # -------------------------------------------------------------
+    stage("score")
     progress("4/4 단계: 프렛보드 운지 최적화 및 맞춤 악보(MusicXML/PDF) 생성 중...", 0.90)
     log("\n--- [Step 4] 동적 계획법(DP) 타브 운지 최적화 & 조판 ---")
 

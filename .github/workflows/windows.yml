@@ -35,7 +35,7 @@ jobs:
         shell: cmd
         run: |
           venv\Scripts\python.exe -m pip install pytest
-          venv\Scripts\python.exe -m pytest tests -q
+          venv\Scripts\python.exe -m pytest tests -q -rs
 
   launcher:
     runs-on: windows-latest

@@ -8,10 +8,12 @@
 [![TorchCREPE](https://img.shields.io/badge/TorchCREPE-SOTA%20F0-green)](https://github.com/maxrmorrison/torchcrepe)
 [![CustomTkinter](https://img.shields.io/badge/GUI-CustomTkinter-blueviolet)](https://github.com/TomSchimansky/CustomTkinter)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Windows](https://github.com/ManofKimchi08/ai-guitar-transcriber/actions/workflows/windows.yml/badge.svg)](https://github.com/ManofKimchi08/ai-guitar-transcriber/actions/workflows/windows.yml)
+[![Release](https://img.shields.io/github/v/release/ManofKimchi08/ai-guitar-transcriber)](https://github.com/ManofKimchi08/ai-guitar-transcriber/releases/latest)
 
-**음악 파일(MP3/WAV/FLAC) 및 유튜브 링크를 입력받아 AI로 밴드 악기(드럼, 베이스, 리듬/리드 기타)를 분리하고, 고정밀 타브(TAB) 악보 및 MusicXML/PDF를 자동 생성하며, 가상 프렛보드에서 동음이현 대안 운지를 실시간으로 수정할 수 있는 All-in-One 로컬 데스크톱 애플리케이션입니다.**
+**음악 파일(MP3/WAV/FLAC) 및 유튜브 링크를 입력받아 AI로 밴드 악기(드럼, 베이스, 리듬/리드 기타)와 보컬을 분리하고, 타브(TAB)·오선보 악보와 가사를 MusicXML/PDF로 자동 생성하며, 가상 프렛보드에서 동음이현 대안 운지를, 가사 수정 창에서 가사를 고칠 수 있는 All-in-One 로컬 데스크톱 애플리케이션입니다.**
 
-An end-to-end AI music transcription suite that isolates band instruments (Drums, Bass, Rhythm/Lead Guitar) from audio or YouTube, performs SOTA pitch and chord recognition, exports professional MusicXML & PDF TAB scores, and provides an interactive virtual fretboard editor for alternate fingering adjustments.
+An end-to-end AI music transcription suite that isolates band instruments (Drums, Bass, Rhythm/Lead Guitar) and vocals from audio or YouTube, transcribes pitch, chords, drums and lyrics, exports MusicXML & PDF scores (TAB and standard notation), and provides an interactive virtual fretboard editor and a lyrics editor.
 
 </div>
 
@@ -37,20 +39,32 @@ An end-to-end AI music transcription suite that isolates band instruments (Drums
 
 ## 📸 주요 화면 및 기능 미리보기 (Screenshots)
 
-### 1. 올인원 반응형 다크모드 GUI & 최근 악보 자동 복원
-> 4개 악기 파트(드럼/베이스/리드기타/리듬기타) 선별 추출, 타브 악보 스타일 선택, 도킹 컨트롤러를 지원합니다. 프로그램을 껐다 켜더라도 이전에 작업한 최근 악보를 즉시 감지하여 하단 버튼이 자동으로 활성화됩니다.
+### 1. 곡 목록 · 변환 · 결과가 한 화면에 있는 GUI
+> 왼쪽에는 변환한 곡 목록, 오른쪽에는 새 변환(파트 선택, 단계별 진행 표시, 취소)과 선택한 곡의 악보 열기·수정 버튼이 있습니다. 마지막으로 고른 옵션을 기억합니다. (그림의 곡 목록은 예시입니다.)
 
 <div align="center">
-  <img src="docs/images/gui_main.png" alt="AI Band Transcriber GUI" width="850"/>
+  <img src="docs/images/gui_main.png" alt="AI Band Transcriber GUI (다크 모드, 변환 중)" width="850"/>
+</div>
+
+> Windows의 라이트/다크 설정을 그대로 따라갑니다.
+
+<div align="center">
+  <img src="docs/images/gui_main_light.png" alt="AI Band Transcriber GUI (라이트 모드)" width="850"/>
 </div>
 
 ---
 
-### 2. 고정밀 기타/베이스 타브(TAB) 악보 자동 생성 결과
-> TorchCREPE GPU 피치 추적과 CQT 코드 인식을 통해 옥타브 점핑 없이 정밀하게 채보된 실제 악보 (LilyPond 벡터 PDF 렌더링).
+### 2. 생성되는 악보: 총보(오선보 + TAB + 가사)와 TAB 악보
+> 보컬 멜로디와 가사, 드럼, 베이스, 리듬/리드 기타가 한 악보에 들어갑니다. 셋잇단음표, 표준 드럼 기보, 줄 번호가 함께 표기됩니다. 아래 두 그림은 이 프로그램의 악보 생성기로 만든 짧은 예시 곡(직접 지은 연습용 선율)을 LilyPond로 출력한 것입니다.
 
 <div align="center">
-  <img src="docs/images/tab_score_preview.png" alt="Generated High Accuracy TAB Score" width="850"/>
+  <img src="docs/images/score_full_preview.png" alt="총보: 오선보 + TAB + 가사" width="700"/>
+</div>
+
+> `TAB` 형태로 출력하면 기타·베이스 연주자용 숫자 악보만 간결하게 나옵니다.
+
+<div align="center">
+  <img src="docs/images/tab_score_preview.png" alt="TAB 악보" width="700"/>
 </div>
 
 ---
@@ -64,16 +78,50 @@ An end-to-end AI music transcription suite that isolates band instruments (Drums
 
 ---
 
-### 4. 운지 수정 후 즉시 갱신된 타브 악보 (Edited Score Preview)
-> 가상 프렛보드에서 원하는 대안 운지를 클릭하여 즉시 재출력된 최신 악보. 이전 구버전 악보와의 충돌 없이 깔끔하게 갱신됩니다.
+### 4. 가사 수정 창 (Lyrics Editor)
+> 인식된 가사를 마디별로, 음표마다 한 음절씩 고칩니다. 아래쪽에서 전체 가사를 확인하고, PDF를 바로 다시 만들 수 있습니다.
 
 <div align="center">
-  <img src="docs/images/edited_score_preview.png" alt="Edited TAB Score Preview" width="850"/>
+  <img src="docs/images/lyrics_editor.png" alt="Lyrics Editor" width="650"/>
 </div>
 
 ---
 
 ## 📝 최신 업데이트 내역 (Release Notes & Changelog)
+
+### 🏷️ Version 1.3.0 (2026-11-15) - 채보 정확도·박자 처리 개선, 보컬/가사 채보, 새 GUI
+
+> **태그 (Tags):** `v1.3.0`, `vocals-lyrics`, `beat-map`, `drum-transcription`, `lead-rhythm-split`, `gui-redesign`
+> 전체 릴리즈 노트: [docs/releases/v1.3.0.md](docs/releases/v1.3.0.md)
+
+수치는 모두 정답을 아는 합성 음원으로 잰 것입니다. 실제 곡에서는 다를 수 있습니다.
+
+#### 1. 🎤 보컬 멜로디 & 가사 채보
+- 보컬 멜로디를 오선보와 기타 TAB으로 채보하고, Whisper로 인식한 가사를 음절 단위로 음표 아래에 붙입니다.
+- 가사 수정 창에서 잘못 인식된 가사를 고치고 PDF를 다시 만들 수 있습니다.
+
+#### 2. 🥁 채보 정확도
+- **코드 인식**: 정확도 88% → 94~99%, 무음 구간 오인식 제거, 스트럼 검출 4/68 → 68/68.
+- **드럼**: 대역별 어택으로 킥·스네어·하이햇(클로즈/오픈)·크래시 구분, F1 0.35 → 0.99. 곡 뒤로 갈수록 타이밍이 밀리던 버그 수정.
+- **리드/리듬 기타 분리**: Mid-Side 대신 스테레오 위치(센터 추출)로 분리. 리드 멜로디 0% → 53~78%.
+- 리듬 기타 트랙이 무음이 되던 문제, 칠 수 없는 코드 운지, 한 줄에 두 음이 겹친 TAB 화음 수정.
+
+#### 3. 🎼 박자·템포·악보 표기
+- **박 지도**: 클릭 없이 녹음해 템포가 흔들리는 곡도 마디선이 따라갑니다 (제자리 음표 24~55% → 100%).
+- 템포 두 배/절반 오인식 보정(6/12 → 12/12), 3/4박 판정, 셋잇단음표·6연음, 셔플·6/8 곡의 12/8·6/8 표기, 32분음표.
+- MusicXML에 템포, 줄 튜닝, 표준 드럼 기보, 조표 추정을 넣었고 MusicXML 3.1 스키마 검증을 통과합니다.
+- PDF 악보에서 악기 이름이 왼쪽에서 잘리던 문제 수정.
+
+#### 4. 🖥️ 새 GUI
+- 왼쪽 곡 목록(검색, 만든 악보 종류 표시), 단계별 체크 목록과 걸린 시간, 누르면 켜지는 파트 선택 버튼.
+- 변환 취소 버튼, 마지막 설정 기억, Windows 라이트/다크 설정을 따르는 디자인.
+
+#### 5. ⚙️ 설치·안정성
+- VRAM 8GB/4GB 모드 추가 (메모리가 모자라면 자동 재시도).
+- 예비 채보기 basic-pitch를 TensorFlow 없이 설치해 설치 용량을 줄였습니다.
+- GitHub Actions가 push마다 Windows에서 `start.bat` 설치와 전체 테스트를 확인하고 런처 exe를 빌드합니다.
+
+---
 
 ### 🏷️ Version 1.2.0 (2026-10-04) - 안정화 및 음질/악보 정밀도 대폭 향상
 
@@ -142,6 +190,11 @@ An end-to-end AI music transcription suite that isolates band instruments (Drums
 - **가사 인식 (Whisper)**: faster-whisper가 가사와 단어별 시간을 인식하고, 음절 단위로 쪼개 해당 음표 아래에 붙입니다 (한국어는 글자 하나 = 음절, 영어는 사전 기반 음절 분리). 인식된 가사는 `<곡명>_lyrics.txt`로도 저장됩니다.
 - **가사 수정 창**: 잘못 인식된 가사를 음표별로 고치고 PDF를 바로 다시 만들 수 있습니다.
 
+### 6. 🖥️ 곡 목록 · 변환 · 결과가 한 화면에 있는 GUI (`app_gui.py`)
+- **곡 목록**: 변환한 곡을 최신순으로 보여 주고(검색 가능), 고른 곡의 PDF·악보 열기, 운지·가사 수정을 바로 할 수 있습니다.
+- **단계별 진행 표시와 취소**: 음원 분리부터 PDF까지 각 단계의 상태와 걸린 시간을 보여 주고, 도중에 취소할 수 있습니다.
+- **설정 기억, 라이트/다크**: 마지막으로 고른 옵션을 기억하고, Windows의 라이트/다크 설정을 따릅니다.
+
 ---
 
 ## 💻 필수 사전 준비 (Prerequisites)
@@ -174,40 +227,43 @@ winget install Musescore.Musescore
 ## 📖 GUI 상세 사용법 단계별 가이드 (Step-by-Step User Manual)
 
 ### Step 1: 음원 입력
-1. **로컬 음악 파일 변환**: `[파일 찾기...]` 버튼을 눌러 컴퓨터에 보관된 MP3, WAV, FLAC 등의 음원을 선택합니다.
+1. **로컬 음악 파일 변환**: `[파일 찾기]` 또는 왼쪽의 `[+ 새 변환]` 버튼을 눌러 컴퓨터에 보관된 MP3, WAV, FLAC 등의 음원을 선택합니다.
 2. **유튜브 링크 변환**: 입력창에 유튜브 URL(`https://www.youtube.com/watch?v=...`)을 붙여넣기만 하면, `yt-dlp`가 최고 음질 오디오를 자동 추출하여 즉시 변환으로 이어집니다.
 
 ### Step 2: 옵션 설정
-1. **악보 출력 형태 (PDF)**:
-   - `타브 악보만 (TAB)`: 기타/베이스 연주자를 위한 숫자 운지 타브 악보 (기본 권장)
-   - `오선보만 (Notation)`: 일반 5선 음표 악보
-   - `둘 다 생성 (TAB + 오선보)`: 상단 오선보와 하단 타브 악보가 쌍으로 표기된 마스터 총보
-2. **생성할 악기 파트 선택 (체크박스)**:
+1. **PDF 악보**:
+   - `TAB`: 기타/베이스 연주자를 위한 숫자 운지 타브 악보 (기본 권장)
+   - `오선보`: 일반 5선 음표 악보
+   - `TAB + 오선보`: 상단 오선보와 하단 타브 악보가 쌍으로 표기된 마스터 총보
+2. **악기 파트 선택 (누르면 켜지고 꺼지는 버튼)**:
    - 🥁 **드럼**: 킥/스네어/하이햇(클로즈·오픈)/크래시 비트 악보
    - 🎸 **베이스**: 저음역 4현 타브 악보
    - 🎸 **리듬 기타**: 백킹 코드 화음 6현 타브 악보
    - 🎸 **리드 기타**: 멜로디 및 솔로 6현 타브 악보
-   *(체크된 파트만 악보에 포함되므로, 기타 솔로만 뽑거나 베이스만 단독 추출할 수 있습니다.)*
-3. **GPU 메모리 (VRAM)**:
+   *(켜 둔 파트만 악보에 포함되므로, 기타 솔로만 뽑거나 베이스만 단독 추출할 수 있습니다.)*
+3. **GPU 메모리**:
    - `8GB 이상 (표준)`: 기본 설정으로 가장 빠르게 처리합니다.
    - `4GB (저사양)`: 음원 분리 구간과 피치 추적 배치를 줄여 메모리를 아낍니다. 결과 품질은 거의 같고 속도만 조금 느려집니다.
    *(프로그램이 그래픽카드 용량을 감지해 기본값을 자동으로 골라 둡니다. CLI에서는 `--vram 8gb` / `--vram 4gb`로 지정합니다.)*
-4. **🎤 보컬 멜로디 + 가사 (선택)**: 체크하면 보컬 멜로디 악보(오선보 + 기타 TAB)와 가사를 함께 만듭니다. `가사 언어`는 보통 `자동 감지`로 두되, 인식이 엉뚱하면 `한국어` / `English` / `日本語`로 지정하세요.
+4. **보컬 + 가사 (선택)**: 켜면 보컬 멜로디 악보(오선보 + 기타 TAB)와 가사를 함께 만듭니다. `가사 언어`는 보통 `자동 감지`로 두되, 인식이 엉뚱하면 `한국어` / `English` / `日本語`로 지정하세요.
    - 처음 사용할 때 가사 인식 모델(Whisper)을 한 번 내려받습니다: 8GB 모드 `large-v3` 약 3GB, 4GB 모드·CPU `large-v3-turbo` 약 1.6GB.
    - CLI: `--parts vocals,lead` 처럼 `vocals`를 넣고, 필요하면 `--lyrics-lang ko`, 가사 없이 멜로디만 원하면 `--no-lyrics`.
 
+고른 옵션과 저장 폴더는 `gui_settings.json`에 저장되어 다음에 켤 때 그대로 돌아옵니다.
+
 ### Step 3: 변환 시작
-- `[🚀 악보 및 타브 생성 시작]` 버튼을 클릭합니다.
-- 하단 로그 창에서 음원 분리 ➡️ 기타 분리 ➡️ TorchCREPE GPU 피치 추적 ➡️ CQT 코드 인식 ➡️ 타브 악보 빌드 및 PDF 생성 단계가 실시간으로 표시됩니다.
+- `[악보 만들기]` 버튼을 클릭합니다.
+- 버튼 아래 체크 목록에 음원 분리 ➡️ 리드/리듬 기타 분리 ➡️ 악기별 채보 ➡️ (가사 인식) ➡️ 악보·PDF 만들기 단계가 차례로 표시되고, 단계마다 걸린 시간이 남습니다. 자세한 내용은 아래 처리 로그에 나옵니다.
+- 도중에 멈추려면 `[취소]`를 누릅니다. 진행 중인 단계를 바로 멈추고, 돌고 있던 음원 분리(Demucs)도 종료합니다.
 
 ### Step 4: 결과물 열람
-작업이 완료되면 하단 버튼들이 활성화됩니다:
-- **`📁 결과 폴더 열기`**: 곡별 결과 폴더를 엽니다. 분리된 무손실 오디오 WAV(`output/<곡명>/stems/`), 악기별 MIDI(`output/<곡명>/midi/`), 악보 파일(`output/<곡명>/scores/`)이 곡마다 따로 저장되어 다른 곡의 결과와 섞이지 않습니다.
-- **`🎼 MuseScore / 악보 프로그램으로 열기`**: 생성된 MusicXML 악보를 MuseScore 4에서 즉시 열어 사운드 재생 및 추가 수정을 할 수 있습니다.
-- **`📄 PDF 악보 열기`**: 완성된 고화질 벡터 PDF 악보를 바로 열람합니다.
+작업이 완료되면 새 곡이 왼쪽 **내 악보** 목록 맨 위에 생기고 자동으로 선택됩니다. 목록에서 다른 곡을 고르면(곡이 많으면 `곡 검색`으로 찾습니다) 아래 버튼들이 그 곡을 대상으로 합니다:
+- **`PDF 열기`**: 완성된 고화질 벡터 PDF 악보를 바로 열람합니다.
+- **`악보 열기`**: 생성된 MusicXML 악보를 MuseScore 4에서 즉시 열어 사운드 재생 및 추가 수정을 할 수 있습니다.
+- **`결과 폴더`**: 곡별 결과 폴더를 엽니다. 분리된 무손실 오디오 WAV(`output/<곡명>/stems/`), 악기별 MIDI(`output/<곡명>/midi/`), 악보 파일(`output/<곡명>/scores/`)이 곡마다 따로 저장되어 다른 곡의 결과와 섞이지 않습니다.
 
 ### Step 5: 가상 프렛보드로 타브 운지 커스텀 수정 (`Fretboard Editor`)
-1. 하단 **`[🎸 타브 운지 수정 (Fretboard Editor)]`** 버튼을 클릭합니다.
+1. 곡을 고른 뒤 **`[운지 수정]`** 버튼을 클릭합니다.
 2. 상단에서 수정할 **악기 파트**(Lead / Rhythm / Bass)와 **마디 번호**를 선택합니다.
 3. 좌측 음표 목록에서 원하는 음표를 클릭하면, 22프렛 지판 위에 **현재 운지(파란색 원)** 와 **동일한 음이 나는 모든 대안 위치(초록색 원)** 가 표시됩니다.
 4. 원하는 위치를 클릭하면 즉시 운지가 변경됩니다.
@@ -218,7 +274,7 @@ winget install Musescore.Musescore
      - **[취소(Cancel)]**: 작업 취소
 
 ### Step 6: 가사 수정 (`Lyrics Editor`)
-1. 하단 **`[🎤 가사 수정 (Lyrics Editor)]`** 버튼을 클릭합니다.
+1. 곡을 고른 뒤 **`[가사 수정]`** 버튼을 클릭합니다.
 2. 마디를 넘기며 음표마다 한 음절씩 고칩니다. 단어가 다음 음표로 이어지면 끝에 `-`를 붙입니다 (예: `beau-` `ti-` `ful`). 칸을 비우면 그 음표의 가사가 지워집니다.
 3. 아래 **전체 가사** 창에서 결과를 확인하고, **`[📄 PDF 갱신 및 열기]`** 로 가사가 반영된 악보를 다시 만듭니다.
 
@@ -290,7 +346,8 @@ ai_band_transcriber/
 ├── Launcher.cs                # 런처 C# 소스 코드
 ├── build_launcher.bat         # Launcher.cs → AI_Band_Transcriber.exe 재빌드 (Windows 기본 C# 컴파일러 사용)
 ├── .github/workflows/windows.yml  # push마다 Windows에서 start.bat 설치·테스트 확인, 런처 exe 빌드 (Actions 탭 Artifacts에서 다운로드)
-├── app_gui.py                 # CustomTkinter 반응형 다크모드 메인 GUI
+├── .github/workflows/release.yml  # v* 태그를 올리면 릴리즈 노트(docs/releases/)와 실행용 zip으로 GitHub Release 생성
+├── app_gui.py                 # CustomTkinter 메인 GUI (곡 목록 + 변환 + 결과)
 ├── main.py                    # CLI 진입점 (src/pipeline.py 호출)
 ├── requirements.txt           # Python 필수 라이브러리 목록
 │
@@ -315,11 +372,15 @@ ai_band_transcriber/
 │   └── youtube_downloader.py  # yt-dlp 유튜브 고음질 오디오 다운로더
 │
 ├── docs/                      # 문서 및 스크린샷 에셋
+│   ├── releases/                  # 버전별 릴리즈 노트 (v1.3.0.md ...)
 │   └── images/
-│       ├── one_click_setup.png    # 원클릭 실행 & 자동 설치 안내 스크린샷
-│       ├── gui_main.png           # 메인 다크모드 GUI 스크린샷
-│       ├── tab_score_preview.png  # 생성된 TAB 악보 프리뷰
-│       └── fretboard_editor.png   # 가상 프렛보드 운지 편집기 스크린샷
+│       ├── one_click_setup.png    # 원클릭 실행 & 자동 설치 안내
+│       ├── gui_main.png           # 메인 GUI (다크 모드, 예시 곡)
+│       ├── gui_main_light.png     # 메인 GUI (라이트 모드)
+│       ├── score_full_preview.png # 총보 예시 (오선보 + TAB + 가사)
+│       ├── tab_score_preview.png  # TAB 악보 예시
+│       ├── fretboard_editor.png   # 가상 프렛보드 운지 편집기
+│       └── lyrics_editor.png      # 가사 수정 창
 │
 └── tests/                     # 단위 테스트 및 검증 스크립트
 ```
@@ -328,7 +389,7 @@ ai_band_transcriber/
 
 ## 🏷️ GitHub Topics / Tags
 
-`ai-transcription`, `guitar-tab`, `torchcrepe`, `demucs`, `chord-recognition`, `fretboard-editor`, `musicxml`, `lilypond`, `musescore`, `customtkinter`, `pytorch`, `audio-to-tab`
+`ai-transcription`, `guitar-tab`, `torchcrepe`, `demucs`, `chord-recognition`, `drum-transcription`, `lyrics-transcription`, `whisper`, `fretboard-editor`, `musicxml`, `lilypond`, `musescore`, `customtkinter`, `pytorch`, `audio-to-tab`
 
 ---
 

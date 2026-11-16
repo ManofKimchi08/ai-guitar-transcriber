@@ -16,6 +16,7 @@ ACCENT = ("#2563EB", "#3B82F6")          # the one colour for primary actions
 ACCENT_HOVER = ("#1D4ED8", "#2563EB")
 SELECTED = ("#BFDBFE", "#2563EB")        # chosen segment (dark text in light mode)
 SELECTED_HOVER = ("#93C5FD", "#1D4ED8")
+ROW_SELECTED = ("#DBEAFE", "#1D2B45")    # chosen song, running stage
 SECONDARY = ("#E5E7EB", "#2B2F38")       # secondary buttons, unselected segments
 SECONDARY_HOVER = ("#D1D5DB", "#363B46")
 
