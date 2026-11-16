@@ -1,7 +1,9 @@
-# Publishes a GitHub Release when a version tag (v1.3.0, ...) is pushed: the title and
-# body come from docs/releases/<tag>.md (first line = title), and the release carries a
-# ready-to-run zip of the repository with the launcher exe built from this tag's
-# Launcher.cs. Re-run it by hand ("Run workflow", with the tag) to update a release.
+# Publishes a GitHub Release for a version tag (v1.3.0, ...): the title and body come
+# from docs/releases/<tag>.md (first line = title), and the release carries a
+# ready-to-run zip of the repository with the launcher exe built from that commit's
+# Launcher.cs. It runs when the tag is pushed, or by hand ("Run workflow", with the
+# tag): a tag that does not exist yet is created on `target`, an existing one has its
+# release updated.
 name: Release
 
 on:
@@ -10,8 +12,11 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing tag to publish or update, e.g. v1.3.0"
+        description: "Tag to publish or update, e.g. v1.3.0"
         required: true
+      target:
+        description: "Branch or commit to tag when the tag does not exist yet"
+        default: main
 
 permissions:
   contents: write
@@ -24,7 +29,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag || github.ref_name }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.target || github.ref }}
+          fetch-depth: 0
+      - name: Use the tag's commit when the tag exists
+        shell: bash
+        run: |
+          git fetch --tags --force
+          if git rev-parse -q --verify "refs/tags/${TAG}" > /dev/null; then
+            git checkout -q "refs/tags/${TAG}"
+          fi
+          git log --oneline -1
       - name: Build AI_Band_Transcriber.exe with build_launcher.bat
         shell: cmd
         run: echo.| build_launcher.bat
@@ -47,5 +61,5 @@ jobs:
             gh release edit "$TAG" --title "$title" --notes-file release_body.md
             gh release upload "$TAG" "$zip" --clobber
           else
-            gh release create "$TAG" "$zip" --verify-tag --title "$title" --notes-file release_body.md
+            gh release create "$TAG" "$zip" --target "$(git rev-parse HEAD)" --title "$title" --notes-file release_body.md
           fi
