@@ -195,9 +195,15 @@ An end-to-end AI music transcription suite that isolates band instruments (Drums
 - **단계별 진행 표시와 취소**: 음원 분리부터 PDF까지 각 단계의 상태와 걸린 시간을 보여 주고, 도중에 취소할 수 있습니다.
 - **설정 기억, 라이트/다크**: 마지막으로 고른 옵션을 기억하고, Windows의 라이트/다크 설정을 따릅니다.
 
-### 7. 🌐 웹페이지용 로컬 엔진 (`engine.py`, 개발 중)
-- 웹페이지에서 곡을 올리면 **내 PC의 GPU로** 변환하는 구조를 준비하고 있습니다. 웹페이지는 다음 단계에서 공개합니다.
-- `run_engine.bat`을 실행하면 엔진이 켜지고 창에 **연결 코드**가 나옵니다. 브라우저마다 처음 한 번 그 코드로 연결합니다.
+### 7. 🌐 웹페이지 + 내 PC의 엔진 (`web/`, `engine.py`)
+- **웹페이지:** https://manofkimchi08.github.io/ai-guitar-transcriber/ — 화면은 웹에서 보고, 변환은 **내 PC의 GPU로** 합니다. 음원은 인터넷으로 올라가지 않고 내 PC의 엔진으로만 갑니다.
+- 엔진이 없으면 페이지에 **[엔진 내려받기]** 버튼과 설치 순서가 나옵니다. 설치 후 `run_engine.bat`을 실행하면 페이지가 열리고 자동으로 연결됩니다. 다른 브라우저에서는 엔진 창에 보이는 **연결 코드** 6자리를 한 번 입력합니다.
+- 페이지에서 음원 파일이나 유튜브 링크로 변환하고, 단계별 진행·취소, 곡 목록·검색, PDF 미리보기, 결과 파일 받기를 할 수 있습니다. 운지·가사 수정은 아직 데스크톱 GUI에서 합니다.
+- 크롬·엣지 권장. 크롬이 "이 기기의 다른 앱 및 서비스에 액세스" 권한을 물으면 허용하세요.
+
+| 웹페이지 (내 PC 엔진에 연결됨, PDF 미리보기) | 엔진이 없을 때: 설치 안내 |
+|---|---|
+| ![웹페이지](docs/images/web_app.png) | ![엔진 설치 안내](docs/images/web_install.png) |
 - 엔진은 이 PC 안(127.0.0.1)에서만 요청을 받고, 허용한 웹사이트와 연결한 브라우저의 요청만 처리합니다. 결과는 GUI와 같은 `output/` 폴더에 저장됩니다.
 - API 설명: [`docs/engine_api.md`](docs/engine_api.md)
 
@@ -352,8 +358,10 @@ ai_band_transcriber/
 ├── Launcher.cs                # 런처 C# 소스 코드
 ├── build_launcher.bat         # Launcher.cs → AI_Band_Transcriber.exe 재빌드 (Windows 기본 C# 컴파일러 사용)
 ├── .github/workflows/windows.yml  # push마다 Windows에서 start.bat 설치·테스트 확인, 런처 exe 빌드 (Actions 탭 Artifacts에서 다운로드)
+├── .github/workflows/pages.yml    # main의 web/을 GitHub Pages로 배포 (웹페이지)
 ├── .github/workflows/release.yml  # v* 태그를 올리거나 직접 실행하면 릴리즈 노트(docs/releases/)와 실행용 zip으로 GitHub Release 생성
 ├── app_gui.py                 # CustomTkinter 메인 GUI (곡 목록 + 변환 + 결과)
+├── web/                       # 웹페이지 (index.html, app.js, style.css: 빌드 없이 그대로 배포)
 ├── engine.py                  # 웹페이지용 로컬 엔진 (127.0.0.1:51823, 연결 코드 표시)
 ├── run_engine.bat             # 설치된 가상환경으로 엔진 실행
 ├── main.py                    # CLI 진입점 (src/pipeline.py 호출)
@@ -386,6 +394,8 @@ ai_band_transcriber/
 │   ├── releases/                  # 버전별 릴리즈 노트 (v1.3.0.md ...)
 │   └── images/
 │       ├── one_click_setup.png    # 원클릭 실행 & 자동 설치 안내
+│       ├── web_app.png            # 웹페이지 (라이트 모드, PDF 미리보기)
+│       ├── web_install.png        # 웹페이지: 엔진 설치 안내 (다크 모드)
 │       ├── gui_main.png           # 메인 GUI (다크 모드, 예시 곡)
 │       ├── gui_main_light.png     # 메인 GUI (라이트 모드)
 │       ├── score_full_preview.png # 총보 예시 (오선보 + TAB + 가사)
