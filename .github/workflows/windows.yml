@@ -47,7 +47,8 @@ jobs:
             $status | ConvertTo-Json
             if ($status.app -ne "ai-band-transcriber" -or -not $status.gpu_checked) { throw "the engine did not answer" }
           } finally {
-            Stop-Process -Id $engine.Id -Force
+            # the venv's python.exe starts the real interpreter as a child: stop both
+            taskkill /PID $engine.Id /T /F | Out-Null
           }
       - name: Tests
         shell: cmd
