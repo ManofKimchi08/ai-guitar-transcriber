@@ -89,6 +89,15 @@ An end-to-end AI music transcription suite that isolates band instruments (Drums
 
 ## 📝 최신 업데이트 내역 (Release Notes & Changelog)
 
+### 🏷️ Version 1.4.0 (2026-11-20) - 웹페이지에서 쓰기 (변환은 내 PC의 GPU로)
+
+> **태그 (Tags):** `v1.4.0`, `web-app`, `local-engine`, `github-pages`
+> 전체 릴리즈 노트: [docs/releases/v1.4.0.md](docs/releases/v1.4.0.md)
+
+- **웹페이지:** https://manofkimchi08.github.io/ai-guitar-transcriber/ 에서 곡을 올리면 내 PC의 엔진이 내 GPU로 변환합니다. 음원은 인터넷으로 올라가지 않습니다.
+- **로컬 엔진:** `run_engine.bat`으로 켭니다. 이 PC 안에서만, 허용한 사이트와 연결 코드로 연결한 브라우저의 요청만 받습니다.
+- 단계별 진행·취소, 곡 목록·검색, PDF 미리보기, 결과 파일 받기. 결과는 데스크톱 GUI와 같은 `output/` 폴더에 저장됩니다.
+
 ### 🏷️ Version 1.3.0 (2026-11-15) - 채보 정확도·박자 처리 개선, 보컬/가사 채보, 새 GUI
 
 > **태그 (Tags):** `v1.3.0`, `vocals-lyrics`, `beat-map`, `drum-transcription`, `lead-rhythm-split`, `gui-redesign`
@@ -391,10 +400,11 @@ ai_band_transcriber/
 │
 ├── docs/                      # 문서 및 스크린샷 에셋
 │   ├── engine_api.md              # 로컬 엔진 API 설명 (웹페이지 ↔ 내 PC)
-│   ├── releases/                  # 버전별 릴리즈 노트 (v1.3.0.md ...)
+│   ├── releases/                  # 버전별 릴리즈 노트 (v1.3.0.md, v1.4.0.md ...)
 │   └── images/
 │       ├── one_click_setup.png    # 원클릭 실행 & 자동 설치 안내
 │       ├── web_app.png            # 웹페이지 (라이트 모드, PDF 미리보기)
+│       ├── web_running.png        # 웹페이지: 변환 중 (다크 모드)
 │       ├── web_install.png        # 웹페이지: 엔진 설치 안내 (다크 모드)
 │       ├── gui_main.png           # 메인 GUI (다크 모드, 예시 곡)
 │       ├── gui_main_light.png     # 메인 GUI (라이트 모드)
