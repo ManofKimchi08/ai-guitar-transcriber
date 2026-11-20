@@ -89,15 +89,6 @@ An end-to-end AI music transcription suite that isolates band instruments (Drums
 
 ## 📝 최신 업데이트 내역 (Release Notes & Changelog)
 
-### 🏷️ Version 1.4.0 (2026-11-20) - 웹페이지에서 쓰기 (변환은 내 PC의 GPU로)
-
-> **태그 (Tags):** `v1.4.0`, `web-app`, `local-engine`, `github-pages`
-> 전체 릴리즈 노트: [docs/releases/v1.4.0.md](docs/releases/v1.4.0.md)
-
-- **웹페이지:** https://manofkimchi08.github.io/ai-guitar-transcriber/ 에서 곡을 올리면 내 PC의 엔진이 내 GPU로 변환합니다. 음원은 인터넷으로 올라가지 않습니다.
-- **로컬 엔진:** `run_engine.bat`으로 켭니다. 이 PC 안에서만, 허용한 사이트와 연결 코드로 연결한 브라우저의 요청만 받습니다.
-- 단계별 진행·취소, 곡 목록·검색, PDF 미리보기, 결과 파일 받기. 결과는 데스크톱 GUI와 같은 `output/` 폴더에 저장됩니다.
-
 ### 🏷️ Version 1.3.0 (2026-11-15) - 채보 정확도·박자 처리 개선, 보컬/가사 채보, 새 GUI
 
 > **태그 (Tags):** `v1.3.0`, `vocals-lyrics`, `beat-map`, `drum-transcription`, `lead-rhythm-split`, `gui-redesign`
@@ -203,18 +194,6 @@ An end-to-end AI music transcription suite that isolates band instruments (Drums
 - **곡 목록**: 변환한 곡을 최신순으로 보여 주고(검색 가능), 고른 곡의 PDF·악보 열기, 운지·가사 수정을 바로 할 수 있습니다.
 - **단계별 진행 표시와 취소**: 음원 분리부터 PDF까지 각 단계의 상태와 걸린 시간을 보여 주고, 도중에 취소할 수 있습니다.
 - **설정 기억, 라이트/다크**: 마지막으로 고른 옵션을 기억하고, Windows의 라이트/다크 설정을 따릅니다.
-
-### 7. 🌐 웹페이지 + 내 PC의 엔진 (`web/`, `engine.py`)
-- **웹페이지:** https://manofkimchi08.github.io/ai-guitar-transcriber/ — 화면은 웹에서 보고, 변환은 **내 PC의 GPU로** 합니다. 음원은 인터넷으로 올라가지 않고 내 PC의 엔진으로만 갑니다.
-- 엔진이 없으면 페이지에 **[엔진 내려받기]** 버튼과 설치 순서가 나옵니다. 설치 후 `run_engine.bat`을 실행하면 페이지가 열리고 자동으로 연결됩니다. 다른 브라우저에서는 엔진 창에 보이는 **연결 코드** 6자리를 한 번 입력합니다.
-- 페이지에서 음원 파일이나 유튜브 링크로 변환하고, 단계별 진행·취소, 곡 목록·검색, PDF 미리보기, 결과 파일 받기를 할 수 있습니다. 운지·가사 수정은 아직 데스크톱 GUI에서 합니다.
-- 크롬·엣지 권장. 크롬이 "이 기기의 다른 앱 및 서비스에 액세스" 권한을 물으면 허용하세요.
-
-| 웹페이지 (내 PC 엔진에 연결됨, PDF 미리보기) | 엔진이 없을 때: 설치 안내 |
-|---|---|
-| ![웹페이지](docs/images/web_app.png) | ![엔진 설치 안내](docs/images/web_install.png) |
-- 엔진은 이 PC 안(127.0.0.1)에서만 요청을 받고, 허용한 웹사이트와 연결한 브라우저의 요청만 처리합니다. 결과는 GUI와 같은 `output/` 폴더에 저장됩니다.
-- API 설명: [`docs/engine_api.md`](docs/engine_api.md)
 
 ---
 
@@ -367,19 +346,13 @@ ai_band_transcriber/
 ├── Launcher.cs                # 런처 C# 소스 코드
 ├── build_launcher.bat         # Launcher.cs → AI_Band_Transcriber.exe 재빌드 (Windows 기본 C# 컴파일러 사용)
 ├── .github/workflows/windows.yml  # push마다 Windows에서 start.bat 설치·테스트 확인, 런처 exe 빌드 (Actions 탭 Artifacts에서 다운로드)
-├── .github/workflows/pages.yml    # main의 web/을 GitHub Pages로 배포 (웹페이지)
 ├── .github/workflows/release.yml  # v* 태그를 올리거나 직접 실행하면 릴리즈 노트(docs/releases/)와 실행용 zip으로 GitHub Release 생성
 ├── app_gui.py                 # CustomTkinter 메인 GUI (곡 목록 + 변환 + 결과)
-├── web/                       # 웹페이지 (index.html, app.js, style.css: 빌드 없이 그대로 배포)
-├── engine.py                  # 웹페이지용 로컬 엔진 (127.0.0.1:51823, 연결 코드 표시)
-├── run_engine.bat             # 설치된 가상환경으로 엔진 실행
 ├── main.py                    # CLI 진입점 (src/pipeline.py 호출)
 ├── requirements.txt           # Python 필수 라이브러리 목록
 │
 ├── src/                       # 핵심 오디오 분석 및 채보 엔진
-│   ├── pipeline.py            # CLI·GUI·엔진 공용 변환 파이프라인 (곡별 출력 폴더)
-│   ├── pipeline_options.py    # 파트·VRAM 설정·단계 이름 (PyTorch 없이 불러올 수 있는 옵션 값)
-│   ├── engine_server.py       # 로컬 엔진 HTTP 서버 (연결 코드·토큰, 업로드, 작업 진행·취소, 결과 파일)
+│   ├── pipeline.py            # CLI·GUI 공용 변환 파이프라인 (곡별 출력 폴더)
 │   ├── cancellation.py        # 변환 취소 (GUI 취소 버튼 → 다음 진행 보고에서 중단, Demucs 종료)
 │   ├── gui_state.py           # GUI 설정 저장(gui_settings.json)·변환한 곡 목록
 │   ├── ui_theme.py            # GUI 색상 (Windows 라이트/다크 모드를 따름)
@@ -399,13 +372,9 @@ ai_band_transcriber/
 │   └── youtube_downloader.py  # yt-dlp 유튜브 고음질 오디오 다운로더
 │
 ├── docs/                      # 문서 및 스크린샷 에셋
-│   ├── engine_api.md              # 로컬 엔진 API 설명 (웹페이지 ↔ 내 PC)
-│   ├── releases/                  # 버전별 릴리즈 노트 (v1.3.0.md, v1.4.0.md ...)
+│   ├── releases/                  # 버전별 릴리즈 노트 (v1.3.0.md ...)
 │   └── images/
 │       ├── one_click_setup.png    # 원클릭 실행 & 자동 설치 안내
-│       ├── web_app.png            # 웹페이지 (라이트 모드, PDF 미리보기)
-│       ├── web_running.png        # 웹페이지: 변환 중 (다크 모드)
-│       ├── web_install.png        # 웹페이지: 엔진 설치 안내 (다크 모드)
 │       ├── gui_main.png           # 메인 GUI (다크 모드, 예시 곡)
 │       ├── gui_main_light.png     # 메인 GUI (라이트 모드)
 │       ├── score_full_preview.png # 총보 예시 (오선보 + TAB + 가사)
