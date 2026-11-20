@@ -195,6 +195,12 @@ An end-to-end AI music transcription suite that isolates band instruments (Drums
 - **단계별 진행 표시와 취소**: 음원 분리부터 PDF까지 각 단계의 상태와 걸린 시간을 보여 주고, 도중에 취소할 수 있습니다.
 - **설정 기억, 라이트/다크**: 마지막으로 고른 옵션을 기억하고, Windows의 라이트/다크 설정을 따릅니다.
 
+### 7. 🌐 웹페이지용 로컬 엔진 (`engine.py`, 개발 중)
+- 웹페이지에서 곡을 올리면 **내 PC의 GPU로** 변환하는 구조를 준비하고 있습니다. 웹페이지는 다음 단계에서 공개합니다.
+- `run_engine.bat`을 실행하면 엔진이 켜지고 창에 **연결 코드**가 나옵니다. 브라우저마다 처음 한 번 그 코드로 연결합니다.
+- 엔진은 이 PC 안(127.0.0.1)에서만 요청을 받고, 허용한 웹사이트와 연결한 브라우저의 요청만 처리합니다. 결과는 GUI와 같은 `output/` 폴더에 저장됩니다.
+- API 설명: [`docs/engine_api.md`](docs/engine_api.md)
+
 ---
 
 ## 💻 필수 사전 준비 (Prerequisites)
@@ -348,11 +354,15 @@ ai_band_transcriber/
 ├── .github/workflows/windows.yml  # push마다 Windows에서 start.bat 설치·테스트 확인, 런처 exe 빌드 (Actions 탭 Artifacts에서 다운로드)
 ├── .github/workflows/release.yml  # v* 태그를 올리거나 직접 실행하면 릴리즈 노트(docs/releases/)와 실행용 zip으로 GitHub Release 생성
 ├── app_gui.py                 # CustomTkinter 메인 GUI (곡 목록 + 변환 + 결과)
+├── engine.py                  # 웹페이지용 로컬 엔진 (127.0.0.1:51823, 연결 코드 표시)
+├── run_engine.bat             # 설치된 가상환경으로 엔진 실행
 ├── main.py                    # CLI 진입점 (src/pipeline.py 호출)
 ├── requirements.txt           # Python 필수 라이브러리 목록
 │
 ├── src/                       # 핵심 오디오 분석 및 채보 엔진
-│   ├── pipeline.py            # CLI·GUI 공용 변환 파이프라인 (곡별 출력 폴더)
+│   ├── pipeline.py            # CLI·GUI·엔진 공용 변환 파이프라인 (곡별 출력 폴더)
+│   ├── pipeline_options.py    # 파트·VRAM 설정·단계 이름 (PyTorch 없이 불러올 수 있는 옵션 값)
+│   ├── engine_server.py       # 로컬 엔진 HTTP 서버 (연결 코드·토큰, 업로드, 작업 진행·취소, 결과 파일)
 │   ├── cancellation.py        # 변환 취소 (GUI 취소 버튼 → 다음 진행 보고에서 중단, Demucs 종료)
 │   ├── gui_state.py           # GUI 설정 저장(gui_settings.json)·변환한 곡 목록
 │   ├── ui_theme.py            # GUI 색상 (Windows 라이트/다크 모드를 따름)
@@ -372,6 +382,7 @@ ai_band_transcriber/
 │   └── youtube_downloader.py  # yt-dlp 유튜브 고음질 오디오 다운로더
 │
 ├── docs/                      # 문서 및 스크린샷 에셋
+│   ├── engine_api.md              # 로컬 엔진 API 설명 (웹페이지 ↔ 내 PC)
 │   ├── releases/                  # 버전별 릴리즈 노트 (v1.3.0.md ...)
 │   └── images/
 │       ├── one_click_setup.png    # 원클릭 실행 & 자동 설치 안내

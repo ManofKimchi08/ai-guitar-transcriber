@@ -1,5 +1,5 @@
 # Checks on a Windows machine what this Linux-only development cannot: that start.bat
-# installs everything, that the tests pass there, and builds the launcher exe from
+# installs everything, that the tests pass there and the local engine starts, and builds the launcher exe from
 # Launcher.cs (download it from the run's "Artifacts"). GitHub's runners have no GPU,
 # so start.bat's CUDA PyTorch installs but runs on the CPU.
 name: Windows
@@ -31,6 +31,24 @@ jobs:
       - name: Import the GUI
         shell: cmd
         run: venv\Scripts\python.exe -c "import app_gui"
+      - name: Start the local engine and ask its status
+        shell: pwsh
+        run: |
+          $engine = Start-Process venv\Scripts\python.exe -ArgumentList "engine.py", "--no-browser" -PassThru -NoNewWindow
+          try {
+            $status = $null
+            for ($i = 0; $i -lt 90; $i++) {
+              try {
+                $status = Invoke-RestMethod -Uri http://127.0.0.1:51823/api/status -Headers @{ Origin = "https://manofkimchi08.github.io" }
+                if ($status.gpu_checked) { break }
+              } catch { }
+              Start-Sleep -Seconds 1
+            }
+            $status | ConvertTo-Json
+            if ($status.app -ne "ai-band-transcriber" -or -not $status.gpu_checked) { throw "the engine did not answer" }
+          } finally {
+            Stop-Process -Id $engine.Id -Force
+          }
       - name: Tests
         shell: cmd
         run: |
