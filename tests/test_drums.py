@@ -209,6 +209,33 @@ class TestDrumTranscription(unittest.TestCase):
         pred = transcribe("boomy_snare", y / np.max(np.abs(y)) * 0.9, sr)
         self.assertEqual(match(truth, pred, KICK)[:3], (12, 12, 0))
 
+    def test_ride_pattern_is_a_ride(self):
+        """Eighth notes on a ride (darker than a hat, a wash ringing on between hits) are
+        written as ride (51), and the kick and snare under them stay."""
+        sr, beat = 44100, 0.5
+        rng = np.random.default_rng(9)
+        y = np.zeros(int(16 * beat * sr + sr))
+        n_ride = int(1.5 * sr)
+        tr = np.arange(n_ride) / sr
+        # Shaped like the median MDB-Drums ride: a stick ping fading fast (7-12 kHz, little
+        # above 10 kHz) over a long, darker wash ringing ~20 dB under it
+        ping = sosfilt(butter(4, [7000 / (sr / 2), 12000 / (sr / 2)], btype="band", output="sos"), rng.standard_normal(n_ride)) * np.exp(-tr / 0.045)
+        wash = 0.08 * sosfilt(butter(4, [5000 / (sr / 2), 10000 / (sr / 2)], btype="band", output="sos"), rng.standard_normal(n_ride)) * np.exp(-tr / 1.5)
+        tk = np.arange(int(0.3 * sr)) / sr
+        kick = 0.9 * np.sin(2 * np.pi * np.cumsum(50 + 70 * np.exp(-tk / 0.03)) / sr) * np.exp(-tk / 0.09)
+        rides = []
+        for k in range(32):
+            t0 = 0.5 + k * beat / 2
+            i = int(t0 * sr)
+            y[i:i + n_ride] += 0.3 * (ping + wash)[:len(y) - i]
+            rides.append(t0)
+            if k % 4 == 0:
+                y[i:i + len(kick)] += kick[:len(y) - i]
+        pred = transcribe("ride", y / np.max(np.abs(y)) * 0.9, sr)
+        written = [p for t, p in pred if p != KICK and any(abs(t - r) < 0.04 for r in rides)]
+        self.assertGreaterEqual(written.count(51), 0.7 * len(rides), f"ride hits written as {written}")
+        self.assertEqual(sum(p == KICK for _, p in pred), 8)
+
     def test_silence_gives_no_hits(self):
         self.assertEqual(transcribe("silence", np.zeros(44100 * 2), 44100), [])
 

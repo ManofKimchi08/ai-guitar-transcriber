@@ -255,13 +255,19 @@ def run_pipeline(
         method = guitar_parts.get("method")
         if method == "mono":
             log("! 기타가 모노라 위치로 나눌 수 없어, 리드/리듬 모두 기타 전체로 채보합니다.")
+        elif method == "mono-texture":
+            log(f"  (기타가 모노라 연주 방식으로 나눴습니다: 화음 구간 {guitar_parts['chordal_share']:.0%} → 리듬, "
+                f"단음 구간 → 리드)")
         elif method == "stereo-swapped":
             log("  (가운데 기타가 코드를 연주해 리듬으로, 좌우의 단음 연주를 리드로 봤습니다)")
         if lead_wav:
             log(f"✓ 리드 기타: {os.path.basename(lead_wav)}")
         else:
             log("! 리드 기타가 들리지 않습니다 (기타 파트가 하나뿐). 리드 파트는 건너뜁니다.")
-        log(f"✓ 리듬 기타: {os.path.basename(rhythm_wav)}")
+        if rhythm_wav:
+            log(f"✓ 리듬 기타: {os.path.basename(rhythm_wav)}")
+        else:
+            log("! 화음을 치는 구간이 없어 리듬 기타 파트는 건너뜁니다.")
     else:
         log("! 기타 트랙 없음 (건너뜀)")
 

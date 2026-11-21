@@ -127,8 +127,27 @@ class TestGuitarSplit(unittest.TestCase):
         self.assertEqual(res["method"], "stereo-swapped")
         self.assertGreater(magnitude_sdr(mono(sf.read(res["lead"])[0]), lead), 3.0)
 
-    def test_mono_guitar_goes_to_both_parts(self):
-        res = self.split("mono", pan(lead_line(self.n, 6) + rhythm_take(self.n, 7), 0))
+    def test_mono_guitar_is_split_in_time(self):
+        """A mono guitar playing a melody, then chords: the melody goes to the lead, the
+        chords to the rhythm guitar (no stereo image to split by)."""
+        try:
+            import basic_pitch  # noqa: F401
+        except ImportError:
+            self.skipTest("basic-pitch not installed")
+        half = self.n
+        y = np.concatenate([lead_line(half, 6), rhythm_take(half, 7)])
+        res = self.split("mono_texture", pan(y, 0))
+        self.assertEqual(res["method"], "mono-texture")
+        lead, rhythm = mono(sf.read(res["lead"])[0]), mono(sf.read(res["rhythm"])[0])
+        rms = lambda x: np.sqrt(np.mean(x ** 2)) + 1e-12
+        # the lead holds the melody half, the rhythm guitar the chord half (each over 20 dB)
+        self.assertGreater(20 * np.log10(rms(lead[:half - SR]) / rms(lead[half + SR:])), 20)
+        self.assertGreater(20 * np.log10(rms(rhythm[half + SR:]) / rms(rhythm[:half - SR])), 20)
+
+    def test_mono_guitar_without_basic_pitch_goes_to_both_parts(self):
+        from unittest import mock
+        with mock.patch("src.guitar_splitter.chordal_windows", return_value=None):
+            res = self.split("mono", pan(lead_line(self.n, 6) + rhythm_take(self.n, 7), 0))
         self.assertEqual(res["method"], "mono")
         self.assertTrue(os.path.exists(res["lead"]) and os.path.exists(res["rhythm"]))
 

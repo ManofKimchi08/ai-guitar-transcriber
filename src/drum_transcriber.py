@@ -8,9 +8,10 @@ then classified by what that attack looks like:
   150-300 Hz (a snare, tom or cymbal hit's low end is the other way round).
 - Snare (38): attack in the snare-wire noise band (1-5 kHz) together with the shell
   body (150-350 Hz), so kick harmonics or a hi-hat alone are not taken for a snare.
-- Hi-hat / cymbal (42 / 46 / 49): attack in the high band (7-16 kHz); a crash also
+- Hi-hat / cymbal (42 / 46 / 49 / 51): attack in the high band (7-16 kHz); a crash also
   reaches down strongly into 3-6 kHz, an open hi-hat keeps ringing (fading slowly), a
-  closed one dies within ~100 ms.
+  closed one dies within ~100 ms, a ride has less above 10 kHz and a wash ringing on
+  between its hits.
 Levels are gated relative to each band's loud hits, so softer strokes still count.
 """
 
@@ -38,6 +39,20 @@ CRASH_FADE_DB = 6.0       # ...and a crash slower still
 # kicks (kick F1 0.89 -> 0.91 over the 20; -4 dB also dropped some soft real kicks)
 KICK_SUB_OVER_LOWMID_DB = -8.0
 CONTENT_FLOOR_DB = 45.0   # see content_bandwidth
+# Ride and crash on full-band audio, measured on the 23 MDB-Drums songs (44.1 kHz, ride,
+# hi-hat and crash labelled), with the hats of the 95 IDMT-SMT-Drums loops as a check that
+# hats stay hats (at least 96% per kit). A ride keeps less above 10 kHz than most hats,
+# its wash rings on between hits, it rises less over that wash and its stick ping fades
+# fast at first; a crash spreads into 3-6 kHz and hardly fades in its first 40 ms.
+# Before, rides were all written as closed hats (MDB ride F 0.00, crash F 0.08); these
+# rules give ride 0.56 and crash 0.65 on the hits found.
+FULL_BAND_HZ = 12000          # the ride / crash cues need the band above 10 kHz
+RIDE_TOP_DB = -3.3            # very_high (10-16 kHz) minus high (7-16 kHz) below this,
+RIDE_FLOOR_DB = -36.0         # the level before the hit above this (vs the loud hits),
+RIDE_MAX_RISE_DB = 25.0       # a rise over it under this (a darker hat jumps from silence)
+RIDE_MIN_EARLY_FADE_DB = 12.0  # and its first 40 ms fading at least this (dB per 100 ms)
+CRASH_SPREAD_DB = 4.0         # 3-6 kHz this much over 7-16 kHz...
+CRASH_EARLY_FADE_DB = 4.0     # ...fading under this many dB per 100 ms over the first 40 ms
 
 
 def hop_samples(sr: int) -> int:
@@ -150,6 +165,7 @@ def transcribe_drums(drum_wav_path: str, output_midi_path: str) -> str:
     # (4.4 kHz) it reached into the snare wires, and on the PC one Slakh song's extra
     # "hats" were mostly wrong (precision 0.53 -> 0.26); full-band audio keeps 7-16 kHz
     high = band_level_db(audio, sr, min(7000, 0.8 * top), top)
+    full_band = top >= FULL_BAND_HZ
     very_high = band_level_db(audio, sr, min(10000, 0.75 * top), top)
 
     loud = {}
@@ -223,6 +239,7 @@ def transcribe_drums(drum_wav_path: str, output_midi_path: str) -> str:
     cym_hits = [(a, f) for a, f in hits_in(high, -25.0, min_gap_sec=0.06, rise_db=HAT_UNDER_RING_DB)
                 if steepest_rise(high, a, f) >= 5.0
                 or (high[f] - high[a]) - (mid_high[f] - mid_high[a]) >= HAT_OWN_RISE_DB]
+    last_crash = -len(high)
     for k, (attack, f) in enumerate(cym_hits):
         spread = mid_high[f] - high[f]
         if _near(snare_hits, f, 4) and spread > -3.0 and very_high[f] - wires[f] < -12.0:
@@ -240,8 +257,20 @@ def transcribe_drums(drum_wav_path: str, output_midi_path: str) -> str:
             fade = (very_high[f] - very_high[probe]) / ((probe - f) * HOP_SEC / 0.1)  # dB per 100 ms
         else:
             sustain, fade = 0.0, np.inf
+        # Over the first 40 ms (before the next hit): how fast the 7-16 kHz level falls
+        early = min(f + int(0.04 / HOP_SEC), next_hit - 1, len(high) - 1)
+        early_fade = (high[f] - high[early]) / max((early - f) * HOP_SEC / 0.1, 1e-6)
         if spread > -12.0 and sustain > 0.6 and fade < CRASH_FADE_DB and rel(high, f) > -4.0:
             add(49, attack, 1.0, velocity(high, f))
+            last_crash = f
+        elif full_band and spread > CRASH_SPREAD_DB and early_fade < CRASH_EARLY_FADE_DB:
+            add(49, attack, 1.0, velocity(high, f))
+            last_crash = f
+        # (a hat over a ringing crash has a wash under it too: no rides while a crash rings, 2 s)
+        elif (full_band and f - last_crash > int(2.0 / HOP_SEC)
+              and very_high[f] - high[f] < RIDE_TOP_DB and rel(high, attack) > RIDE_FLOOR_DB
+              and high[f] - high[attack] < RIDE_MAX_RISE_DB and early_fade > RIDE_MIN_EARLY_FADE_DB):
+            add(51, attack, 0.3, velocity(high, f, 35, 120))
         elif sustain > 0.5 and fade < OPEN_FADE_DB:
             add(46, attack, 0.25, velocity(high, f, 35, 120))
         else:
