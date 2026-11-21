@@ -217,6 +217,9 @@ def run_pipeline(
     # bleed is left there, 30-80 dB under the mix), so the bleed is not transcribed:
     # a guitar-only recording gave ~50 bass and ~60 drum notes
     mix_stems = [os.path.join(stems_dir, f"{k}.wav") for k in DEMUCS_STEMS]
+    # Whisper hears the ungated vocals: on stretches of digital silence it makes up
+    # text ("예수님의 이름으로 기도합니다" on an English song), so only the melody is gated
+    lyrics_wav = vocals_wav
     gated = {}
     for part, wav in (("drums", drums_wav), ("guitar", guitar_wav), ("bass", bass_wav), ("vocals", vocals_wav)):
         if os.path.exists(wav) and (part != "vocals" or "vocals" in selected_parts):
@@ -299,7 +302,7 @@ def run_pipeline(
         log("\n--- [Step 3+] 가사 인식 (Whisper) ---")
         try:
             lyrics_txt = os.path.join(score_dir, f"{song_title}_lyrics.txt")
-            vocal_lyrics = recognize_lyrics(vocals_wav, midi_paths["vocals"], vram_profile,
+            vocal_lyrics = recognize_lyrics(lyrics_wav, midi_paths["vocals"], vram_profile,
                                             lyrics_language, lyrics_txt, log=log)
         except Exception as e:
             lyrics_txt = None
