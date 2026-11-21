@@ -89,6 +89,24 @@ An end-to-end AI music transcription suite that isolates band instruments (Drums
 
 ## 📝 최신 업데이트 내역 (Release Notes & Changelog)
 
+### 🏷️ Version 1.4.0 (2026-11-21) - 템포·드럼·기타·가사 정확도 개선 (공개 정답 데이터로 측정)
+
+> **태그 (Tags):** `v1.4.0`, `ride-cymbal`, `beat-tracking`, `stem-gate`, `lyrics-language`
+> 전체 릴리즈 노트: [docs/releases/v1.4.0.md](docs/releases/v1.4.0.md)
+
+Slakh·GuitarSet·IDMT·MDB-Drums·Ballroom의 정답과 비교하고, PC에서 v1.3.0과 함께 돌려 확인했습니다.
+
+- **템포:** 90~105 BPM 곡을 2배로 읽던 문제를 고쳤습니다(Slakh 박 F 0.66 → 0.72). 4/4 곡을 3/4로 잘못 읽는 일도 줄었습니다.
+- **드럼:**
+  - 라이드 심벌을 따로 적습니다(MDB 라이드 F 0 → 0.41, 크래시 0.08 → 0.28).
+  - 스네어·크래시의 저음을 킥으로 잡지 않습니다.
+  - 고음이 잘린 음원에서도 하이햇을 찾습니다.
+- **기타:**
+  - 리듬 기타를 실제 운지(개방현/바레)로 적고, maj7·m7 코드를 인식합니다. 처음 보는 반주곡에서 F 0.43 → 0.60입니다.
+  - 모노 기타는 화음 구간과 단음 구간을 나눠 리듬과 리드로 보냅니다.
+- **없는 악기:** 분리된 트랙에 남은 다른 악기 소리를 채보하지 않습니다. 기타 독주곡의 가짜 베이스가 119 → 0개로 줄었습니다.
+- **가사:** 지정한 언어가 노래와 분명히 다르면 노래의 언어로 인식합니다.
+
 ### 🏷️ Version 1.3.0 (2026-11-15) - 채보 정확도·박자 처리 개선, 보컬/가사 채보, 새 GUI
 
 > **태그 (Tags):** `v1.3.0`, `vocals-lyrics`, `beat-map`, `drum-transcription`, `lead-rhythm-split`, `gui-redesign`
@@ -372,7 +390,7 @@ ai_band_transcriber/
 │   └── youtube_downloader.py  # yt-dlp 유튜브 고음질 오디오 다운로더
 │
 ├── docs/                      # 문서 및 스크린샷 에셋
-│   ├── releases/                  # 버전별 릴리즈 노트 (v1.3.0.md ...)
+│   ├── releases/                  # 버전별 릴리즈 노트 (v1.3.0.md, v1.4.0.md ...)
 │   └── images/
 │       ├── one_click_setup.png    # 원클릭 실행 & 자동 설치 안내
 │       ├── gui_main.png           # 메인 GUI (다크 모드, 예시 곡)
