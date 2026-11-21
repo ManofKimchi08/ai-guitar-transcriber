@@ -59,21 +59,37 @@ def mono(x: np.ndarray) -> np.ndarray:
     return x.mean(axis=1) if x.ndim > 1 else x
 
 
-def gate_stem(stem_path: str, mix_paths: list, out_path: str, part: str = None) -> float:
+def load_mix(paths: list):
+    """(mono sum of the given stems, sample rate); stems at another rate are left out."""
+    mix, sr = None, None
+    for p in paths:
+        if not os.path.exists(p):
+            continue
+        y, y_sr = sf.read(p, always_2d=True)
+        if sr is None:
+            mix, sr = np.zeros(len(y)), y_sr
+        if y_sr == sr:
+            m = mono(y)[:len(mix)]
+            mix[:len(m)] += m
+    return mix, sr
+
+
+def gate_stem(stem_path: str, mix, out_path: str, part: str = None) -> float:
     """
-    Writes `stem_path` to `out_path` with the windows where it is absent silenced, the
-    mix being the sum of `mix_paths` (the song's stems). Returns the share of the song
-    kept (0..1); 0 means the instrument never plays.
+    Writes `stem_path` to `out_path` with the windows where it is absent silenced. `mix`
+    is the song's mix as (samples, sample rate) from load_mix (load it once for all the
+    stems: re-reading six stems per part cost up to 12 s a song) or a list of stem paths.
+    Returns the share of the song kept (0..1); 0 means the instrument never plays, and
+    at 1 nothing is written to `out_path`.
     """
     stem, sr = sf.read(stem_path, always_2d=True)
-    mix = np.zeros(len(stem))
-    for p in mix_paths:
-        if os.path.exists(p):
-            other, other_sr = sf.read(p, always_2d=True)
-            if other_sr == sr:
-                m = mono(other)[:len(mix)]
-                mix[:len(m)] += m
+    mix, mix_sr = load_mix(mix) if isinstance(mix, (list, tuple)) and (not mix or isinstance(mix[0], str)) else mix
+    if mix is None or mix_sr != sr:
+        mix = mono(stem)  # nothing to compare with: keep the stem as it is
+    mix = np.pad(mix[:len(stem)], (0, max(0, len(stem) - len(mix))))
     keep = presence(mono(stem), mix, sr, ABSENT_DB.get(part, DEFAULT_ABSENT_DB))
+    if keep.all():
+        return 1.0  # nothing to silence: no copy is written, use the stem itself
     gain = gain_curve(keep, len(stem), sr)
     sf.write(out_path, stem * gain[:, None], sr)
     return float(keep.mean())

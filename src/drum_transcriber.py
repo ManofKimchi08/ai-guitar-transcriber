@@ -37,6 +37,7 @@ CRASH_FADE_DB = 6.0       # ...and a crash slower still
 # 20 Slakh drum tracks, -8..-38 dB on the snare / crash hits whose low end was taken for
 # kicks (kick F1 0.89 -> 0.91 over the 20; -4 dB also dropped some soft real kicks)
 KICK_SUB_OVER_LOWMID_DB = -8.0
+CONTENT_FLOOR_DB = 45.0   # see content_bandwidth
 
 
 def hop_samples(sr: int) -> int:
@@ -46,14 +47,18 @@ def hop_samples(sr: int) -> int:
 def content_bandwidth(audio: np.ndarray, sr: int) -> float:
     """
     The highest frequency (Hz) the recording really holds: where its average spectrum
-    falls 60 dB below its 100 Hz - 5 kHz level. A 16 kHz source resampled to 44.1 kHz
-    (e.g. a separated stem) keeps its sample rate but nothing above 8 kHz.
+    falls CONTENT_FLOOR_DB below its 100 Hz - 5 kHz level. A 16 kHz source resampled to
+    44.1 kHz keeps its sample rate but nothing above 8 kHz; separated by Demucs, the empty
+    band fills with artifacts 53-62 dB down, while real cymbals stay within ~30 dB up to
+    16 kHz and a dull microphone recording within ~45 dB to 12 kHz.
     """
     from scipy.signal import welch
     f, psd = welch(audio, sr, nperseg=4096)
-    db = 10 * np.log10(psd + 1e-20)
+    from scipy.ndimage import median_filter
+    # Median over ~1 kHz: a narrow artifact peak above the band is not content
+    db = median_filter(10 * np.log10(psd + 1e-20), size=max(3, int(1000 / (f[1] - f[0]))), mode="nearest")
     ref = np.percentile(db[(f >= 100) & (f <= 5000)], 95)
-    above = f[db > ref - 60.0]
+    above = f[db > ref - CONTENT_FLOOR_DB]
     return float(above.max()) if len(above) else 0.5 * sr
 
 
