@@ -12,6 +12,7 @@ from pathlib import Path
 from src.cancellation import PipelineCancelled, cancellable
 from src.separator import separate_stems
 from src.guitar_splitter import split_guitar_track
+from src.stem_gate import gate_stem
 from src.drum_transcriber import transcribe_drums
 from src.pitch_transcriber import transcribe_pitch
 from src.tab_builder import build_musicxml_score
@@ -38,6 +39,10 @@ VRAM_PROFILES = {
 def vram_profile_for(total_gb: float) -> str:
     """Maps a GPU's total memory to a VRAM profile ("8 GB" cards report slightly under 8 GiB)."""
     return "8gb" if total_gb >= 7.0 else "4gb"
+
+
+# Stems htdemucs_6s writes; their sum is the mix the stem gate compares each stem with
+DEMUCS_STEMS = ("drums", "bass", "guitar", "vocals", "other", "piano")
 
 
 def detect_vram_profile() -> str:
@@ -207,6 +212,25 @@ def run_pipeline(
         guitar_wav = stems.get("guitar", guitar_wav)
         vocals_wav = stems.get("vocals", vocals_wav)
         log("✓ 분리 완료: 드럼, 베이스, 기타, 보컬 스템 생성됨")
+
+    # Silence each stem where its instrument is not playing (only other instruments'
+    # bleed is left there, 30-80 dB under the mix), so the bleed is not transcribed:
+    # a guitar-only recording gave ~50 bass and ~60 drum notes
+    mix_stems = [os.path.join(stems_dir, f"{k}.wav") for k in DEMUCS_STEMS]
+    gated = {}
+    for part, wav in (("drums", drums_wav), ("guitar", guitar_wav), ("bass", bass_wav), ("vocals", vocals_wav)):
+        if os.path.exists(wav) and (part != "vocals" or "vocals" in selected_parts):
+            out = os.path.join(stems_dir, f"{part}_gated.wav")
+            kept = gate_stem(wav, mix_stems, out, part=part)
+            gated[part] = out
+            if kept == 0.0:
+                log(f"! {part}: 이 곡에서 연주되지 않는 것 같습니다 (분리된 트랙에 다른 악기의 잔향만 있음). 이 파트는 비워 둡니다.")
+            elif kept < 0.95:
+                log(f"  - {part}: 연주하는 구간 {kept:.0%}만 채보합니다 (나머지 구간은 다른 악기의 잔향뿐)")
+    drums_wav = gated.get("drums", drums_wav)
+    guitar_wav = gated.get("guitar", guitar_wav)
+    bass_wav = gated.get("bass", bass_wav)
+    vocals_wav = gated.get("vocals", vocals_wav)
 
     # -------------------------------------------------------------
     # Step 2: Split Guitar into Lead and Rhythm
