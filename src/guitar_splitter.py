@@ -12,6 +12,11 @@ sides, is not. Centre bins go to the lead, the rest to the rhythm guitar.
 
 Some mixes do it the other way round (one rhythm guitar in the middle, the solo panned
 to a side), so the part that plays chords becomes the rhythm guitar.
+
+A mono guitar has no stereo image to split by. It is split in time instead: stretches
+where it plays chords (basic-pitch hears 2+ notes at once on average) go to the rhythm
+guitar, single-note stretches to the lead. Before, both parts got the whole guitar, so a
+solo also came out as chords and an accompaniment also as a melody line.
 """
 
 import os
@@ -34,6 +39,12 @@ ABSENT_RATIO = 0.03              # a part with less than this share of the energ
 BLOCK_SEC = 30.0                 # processed in blocks: a 4-minute stem in one go needs ~1 GB
 PAD_SEC = 1.0                    # context around each block, far beyond the STFT window
 SWAP_MARGIN = 1.0                # centre this many more pitch classes per frame than the sides: it holds the chords
+# Mono guitar, split in time. On GuitarSet (40 recordings with per-string note labels),
+# basic-pitch's mean polyphony per second told chord windows (2+ notes sounding) from
+# single-note ones with AUC 0.96; at 2.0, 88% of the windows were right (simpler chroma or
+# CQT peak counts: AUC 0.71-0.75)
+TEXTURE_WINDOW_SEC = 1.0
+CHORDAL_POLYPHONY = 2.0
 
 
 def channel_similarity(left_spec: np.ndarray, right_spec: np.ndarray, long_frames: int = 0) -> np.ndarray:
@@ -120,15 +131,38 @@ def _normalize(sig: np.ndarray) -> np.ndarray:
     return sig / peak * 0.95 if peak > 1e-6 else sig
 
 
+def chordal_windows(audio_path: str, duration: float):
+    """Per TEXTURE_WINDOW_SEC window: True where the guitar plays chords (basic-pitch's mean
+    polyphony, sampled every 50 ms, smoothed over 3 windows), or None without basic-pitch."""
+    try:
+        from basic_pitch import ICASSP_2022_MODEL_PATH
+        from basic_pitch.inference import predict
+        _, _, notes = predict(audio_path, ICASSP_2022_MODEL_PATH)
+    except Exception:
+        return None
+    n = max(1, int(np.ceil(duration / TEXTURE_WINDOW_SEC)))
+    starts = np.array([s for s, *_ in notes]) if notes else np.zeros(0)
+    ends = np.array([e for _, e, *_ in notes]) if notes else np.zeros(0)
+    poly = np.zeros(n)
+    for k in range(n):
+        ts = np.arange(k * TEXTURE_WINDOW_SEC, (k + 1) * TEXTURE_WINDOW_SEC, 0.05)
+        poly[k] = np.mean([np.sum((starts <= t) & (t < ends)) for t in ts]) if len(starts) else 0.0
+    from scipy.ndimage import median_filter
+    return median_filter(poly, size=3, mode="nearest") >= CHORDAL_POLYPHONY
+
+
 def split_guitar_track(input_wav_path: str, output_dir: str) -> dict:
     """
     Splits a guitar stem into lead and rhythm parts.
 
-    Returns {"lead": path or None, "rhythm": path, "method": ...}; method is
+    Returns {"lead": path or None, "rhythm": path or None, "method": ...}; method is
     "stereo" (centre = lead, sides = rhythm), "stereo-swapped" (the centre plays the
-    chords: sides = lead, centre = rhythm), or "mono" when the stem has no stereo image
-    to split by (both parts then get the whole guitar). "lead" is None when only one
-    guitar part is there to hear, e.g. two panned rhythm guitars and nothing between.
+    chords: sides = lead, centre = rhythm), "mono-texture" when the stem has no stereo
+    image (chord stretches = rhythm, single-note stretches = lead; "chordal_share" says
+    how much is chords), or "mono" when basic-pitch is missing as well (both parts then get
+    the whole guitar). "lead" is None when only one guitar part is there to hear, e.g. two
+    panned rhythm guitars and nothing between; "rhythm" only for a mono guitar that never
+    plays chords.
     """
     os.makedirs(output_dir, exist_ok=True)
     lead_path = os.path.join(output_dir, "guitar_lead.wav")
@@ -139,12 +173,26 @@ def split_guitar_track(input_wav_path: str, output_dir: str) -> dict:
     mid = 0.5 * (left + right)
     side = 0.5 * (left - right)
     if np.sum(side ** 2) < MONO_SIDE_RATIO * np.sum(mid ** 2):
-        # Nothing to tell the guitars apart by: both parts get the whole guitar (the
-        # lead transcriber follows the strongest line, the chord recognizer the harmony)
-        whole = _normalize(mid)
-        sf.write(lead_path, whole, sr)
-        sf.write(rhythm_path, whole, sr)
-        return {"lead": lead_path, "rhythm": rhythm_path, "method": "mono"}
+        chordal = chordal_windows(input_wav_path, len(mid) / sr)
+        if chordal is None:
+            # Nothing to split by: both parts get the whole guitar (the lead transcriber
+            # follows the strongest line, the chord recognizer the harmony)
+            whole = _normalize(mid)
+            sf.write(lead_path, whole, sr)
+            sf.write(rhythm_path, whole, sr)
+            return {"lead": lead_path, "rhythm": rhythm_path, "method": "mono"}
+        # Chord stretches -> rhythm, single-note stretches -> lead
+        from src.stem_gate import gain_curve
+        gain = gain_curve(chordal, len(mid), sr, TEXTURE_WINDOW_SEC)
+        result = {"lead": None, "rhythm": None, "method": "mono-texture", "chordal_share": float(chordal.mean())}
+        for key, path, part in (("rhythm", rhythm_path, mid * gain), ("lead", lead_path, mid * (1 - gain))):
+            share = chordal.mean() if key == "rhythm" else 1 - chordal.mean()
+            if share > 0:
+                sf.write(path, _normalize(part), sr)
+                result[key] = path
+            elif os.path.exists(path):
+                os.remove(path)  # an earlier run's part is not this one's
+        return result
 
     center, sides = split_center_sides(left, right, sr)
     if np.dot(sides[:, 0], sides[:, 1]) < -0.3 * np.sum(sides ** 2) / 2:

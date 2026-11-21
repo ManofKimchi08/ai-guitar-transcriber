@@ -45,9 +45,9 @@ def presence(stem: np.ndarray, mix: np.ndarray, sr: int, absent_db: float = DEFA
     return keep
 
 
-def gain_curve(keep: np.ndarray, length: int, sr: int) -> np.ndarray:
+def gain_curve(keep: np.ndarray, length: int, sr: int, window_sec: float = GATE_WINDOW_SEC) -> np.ndarray:
     """Sample gains: 1 in kept windows, 0 elsewhere, with FADE_SEC linear ramps."""
-    hop = int(GATE_WINDOW_SEC * sr)
+    hop = int(window_sec * sr)
     gain = np.repeat(keep.astype(float), hop)[:length]
     gain = np.pad(gain, (0, length - len(gain)))
     fade = max(1, int(FADE_SEC * sr))
