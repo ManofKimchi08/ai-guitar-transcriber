@@ -58,7 +58,11 @@ def content_bandwidth(audio: np.ndarray, sr: int) -> float:
     # Median over ~1 kHz: a narrow artifact peak above the band is not content
     db = median_filter(10 * np.log10(psd + 1e-20), size=max(3, int(1000 / (f[1] - f[0]))), mode="nearest")
     ref = np.percentile(db[(f >= 100) & (f <= 5000)], 95)
-    above = f[db > ref - CONTENT_FLOOR_DB]
+    # The last bins before Nyquist are left out: the PC's separated stems held a bump
+    # there (~-54 dB, above the empty band under it) that made a 7.6 kHz stem read as
+    # full band
+    searched = f <= min(0.95 * sr / 2, 20000)
+    above = f[searched & (db > ref - CONTENT_FLOOR_DB)]
     return float(above.max()) if len(above) else 0.5 * sr
 
 

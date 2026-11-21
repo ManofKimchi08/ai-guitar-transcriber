@@ -191,6 +191,9 @@ class TestDrumTranscription(unittest.TestCase):
         low = librosa.resample(librosa.resample(noise, orig_sr=sr, target_sr=16000), orig_sr=16000, target_sr=sr)
         high = sosfilt(butter(8, 8500 / (sr / 2), btype="high", output="sos"), rng.standard_normal(sr * 4))
         self.assertLess(content_bandwidth(low + 10 ** (-55 / 20) * high, sr), 8500)
+        # ...even with a bump just under Nyquist (seen on the PC's GPU-separated stems)
+        top = sosfilt(butter(8, 21500 / (sr / 2), btype="high", output="sos"), rng.standard_normal(sr * 4))
+        self.assertLess(content_bandwidth(low + 10 ** (-55 / 20) * high + 10 ** (-30 / 20) * top, sr), 8500)
         self.assertGreater(content_bandwidth(low + 10 ** (-25 / 20) * high, sr), 15000)
 
     def test_boomy_snare_is_not_a_kick(self):

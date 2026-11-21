@@ -10,8 +10,25 @@ import re
 HALLUCINATED_PHRASES = (
     "시청해주셔서 감사합니다", "구독과 좋아요", "자막 제공", "자막 by", "MBC 뉴스", "KBS 뉴스",
     "thanks for watching", "thank you for watching", "subtitles by", "please subscribe",
-    "ご視聴ありがとうございました", "チャンネル登録",
+    "ご視聴ありがとうございました", "チャンネル登録", "다음 영상에서 만나요",
 )
+
+# A language chosen for the lyrics is kept unless the song is clearly in another one:
+# Whisper forced to Korean on an English song made up a different Korean text on every
+# run (a "translation", nonsense syllables, a video outro line)
+OVERRIDE_DETECTED_PROB = 0.8    # the detected language at least this likely...
+OVERRIDE_REQUESTED_PROB = 0.05  # ...and the requested one less likely than this
+
+
+def choose_language(requested: str, detected: str, probabilities: dict) -> str:
+    """The language to transcribe in: the requested one unless the detection is sure
+    the vocals are in another language and all but rules the requested one out."""
+    if not requested:
+        return detected
+    if (detected != requested and probabilities.get(detected, 0.0) >= OVERRIDE_DETECTED_PROB
+            and probabilities.get(requested, 0.0) < OVERRIDE_REQUESTED_PROB):
+        return detected
+    return requested
 
 # Small kana and the long-vowel mark belong to the preceding sung syllable (mora)
 _ATTACHING_KANA = set("ぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮー")
@@ -24,12 +41,23 @@ def _is_syllabic_char(ch: str) -> bool:
             0x4E00 <= code <= 0x9FFF or 0x3400 <= code <= 0x4DBF)
 
 
+def _load_audio(path: str):
+    """16 kHz mono float32, as Whisper takes it (librosa: no dependency on the PyAV version
+    faster-whisper's own decoder needs)."""
+    import librosa
+    import numpy as np
+    return librosa.load(path, sr=16000, mono=True)[0].astype(np.float32)
+
+
 def transcribe_lyrics(vocals_wav: str, model_size: str = "large-v3", device: str = None,
                       compute_type: str = None, language: str = None) -> dict:
     """
     Runs Whisper on the vocal stem.
 
-    Returns {"language": code, "words": [{"start", "end", "text"}], "lines": [str]}.
+    Returns {"language": code used, "requested": `language`, "detected": code or None,
+    "detected_probability", "words": [{"start", "end", "text"}], "lines": [str]}.
+    With a requested language the vocals' language is detected first (on the sung parts),
+    and a song clearly in another language is transcribed in that one (choose_language).
     Segments that look like hallucinations (no speech, repetition loops, subtitle
     credits) and very unsure words are dropped.
     """
@@ -54,8 +82,14 @@ def transcribe_lyrics(vocals_wav: str, model_size: str = "large-v3", device: str
 
     model = WhisperModel(model_size, device=device, compute_type=compute_type)
     try:
+        audio = _load_audio(vocals_wav)
+        requested, detected, detected_prob = language, None, None
+        if language:
+            detected, detected_prob, all_probs = model.detect_language(
+                audio=audio, vad_filter=True, language_detection_segments=4)
+            language = choose_language(language, detected, dict(all_probs))
         segments, info = model.transcribe(
-            vocals_wav,
+            audio,
             language=language,
             word_timestamps=True,
             vad_filter=True,
@@ -75,7 +109,9 @@ def transcribe_lyrics(vocals_wav: str, model_size: str = "large-v3", device: str
             words.extend({"start": float(w.start), "end": float(w.end), "text": w.word.strip()}
                          for w in seg_words)
             lines.append(text)
-        return {"language": info.language, "words": words, "lines": lines}
+        return {"language": info.language, "requested": requested, "detected": detected or info.language,
+                "detected_probability": detected_prob if detected else getattr(info, "language_probability", None),
+                "words": words, "lines": lines}
     finally:
         del model
         gc.collect()

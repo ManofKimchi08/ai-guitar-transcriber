@@ -98,6 +98,11 @@ def recognize_lyrics(vocals_wav: str, vocal_midi: str, vram_profile: dict, langu
         f.write("\n".join(result["lines"]) + "\n")
 
     notes = sorted(pretty_midi.PrettyMIDI(vocal_midi).instruments[0].notes, key=lambda n: n.start)
+    requested, used = result.get("requested"), result["language"]
+    if requested and used != requested:
+        sure = result.get("detected_probability")
+        log(f"  ! 지정한 가사 언어({requested})와 노래 언어가 달라 '{used}'로 인식합니다"
+            + (f" (감지 확률 {sure:.0%})" if sure else "") + ".")
     placed = align_syllables_to_notes(words_to_syllables(result["words"], result["language"]), notes)
     log(f"  ✓ 가사 {len(result['words'])}단어 인식 (언어: {result['language']}), 음표 {len(placed)}개에 배치")
     log(f"  ✓ 가사 텍스트: {os.path.basename(text_path)}")
