@@ -179,6 +179,20 @@ class TestDrumTranscription(unittest.TestCase):
         self.assertGreaterEqual(found, 0.75 * total, f"closed hats {found}/{total}")
         self.assertEqual(false, 0)
 
+    def test_bandwidth_ignores_separation_artifacts(self):
+        """Above an 8 kHz source's band, Demucs leaves a noise floor ~55 dB down: that is not
+        content (it hid the hats of separated stems), while real cymbals 25 dB down are."""
+        import librosa
+        from src.drum_transcriber import content_bandwidth
+        sr = 44100
+        rng = np.random.default_rng(0)
+        noise = rng.standard_normal(sr * 4)
+        # a 16 kHz source: nothing above 8 kHz
+        low = librosa.resample(librosa.resample(noise, orig_sr=sr, target_sr=16000), orig_sr=16000, target_sr=sr)
+        high = sosfilt(butter(8, 8500 / (sr / 2), btype="high", output="sos"), rng.standard_normal(sr * 4))
+        self.assertLess(content_bandwidth(low + 10 ** (-55 / 20) * high, sr), 8500)
+        self.assertGreater(content_bandwidth(low + 10 ** (-25 / 20) * high, sr), 15000)
+
     def test_boomy_snare_is_not_a_kick(self):
         """An electronic snare with a big 150-200 Hz body (more there than below 80 Hz) is a
         snare, not a kick, even when it is as loud in the low band as the kicks."""

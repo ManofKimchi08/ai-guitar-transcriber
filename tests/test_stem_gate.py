@@ -60,6 +60,7 @@ class TestStemGate(unittest.TestCase):
         piano, quiet = self.song(-38)
         out = os.path.join(self.tmp.name, "gated.wav")
         self.assertEqual(gate_stem(quiet, [piano, quiet], out, part="bass"), 1.0)
+        self.assertFalse(os.path.exists(out))  # kept whole: no copy written
         self.assertLess(gate_stem(quiet, [piano, quiet], out, part="guitar"), 0.6)
 
     def test_missing_instrument_is_emptied(self):
