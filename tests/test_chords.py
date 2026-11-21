@@ -103,6 +103,31 @@ class TestChordRecognition(unittest.TestCase):
         sf.write(path, np.zeros(22050 * 2), 22050)
         self.assertEqual(recognize_chords(path), [])
 
+    def test_voicing_follows_the_notes_played(self):
+        """The same chord played open or as a barre higher up gets that voicing in the TAB."""
+        from src.chord_recognizer import barre_voicing
+        out_dir = os.path.join(os.path.dirname(__file__), "test_output", "chords")
+        os.makedirs(out_dir, exist_ok=True)
+        rng = np.random.default_rng(5)
+        sr, beat = 22050, 0.6
+        for name, voicing in (("G", STANDARD_VOICINGS["G"]), ("G", barre_voicing("G", "E")),
+                              ("C", STANDARD_VOICINGS["C"]), ("C", barre_voicing("C", "E"))):
+            y = np.zeros(int(8 * beat * sr + sr))
+            for k in range(8):
+                for j, (s, f) in enumerate(sorted(voicing, reverse=True)):
+                    hz = 440 * 2 ** ((GUITAR_BASE_PITCHES[s] + f - 69) / 12)
+                    sig = 0.25 * pluck(hz, beat + 0.05, sr, rng)
+                    i = int((0.3 + k * beat + j * 0.008) * sr)
+                    y[i:i + len(sig)] += sig[:max(0, len(y) - i)]
+            path = os.path.join(out_dir, f"voicing_{name}_{voicing[0][1]}.wav")
+            sf.write(path, y / np.max(np.abs(y)) * 0.8, sr)
+            pred = recognize_chords(path)
+            labelled = sum(p["end"] - p["start"] for p in pred if p["chord"] == name)
+            same = sum(p["end"] - p["start"] for p in pred
+                       if p["chord"] == name and sorted(p["voicing"]) == sorted(voicing))
+            # Most of it in this voicing (a fading last strum may read as another shape)
+            self.assertGreater(same, 0.7 * labelled, f"{name} played as {voicing}: {pred}")
+
 
 if __name__ == "__main__":
     unittest.main()
