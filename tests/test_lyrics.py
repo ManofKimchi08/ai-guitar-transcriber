@@ -96,11 +96,47 @@ class TestLyrics(unittest.TestCase):
             def transcribe(self, *args, **kwargs):
                 return iter(segments), W(language="ko")
 
-        with mock.patch.dict(sys.modules, {"faster_whisper": types.SimpleNamespace(WhisperModel=FakeModel)}):
+        with mock.patch.dict(sys.modules, {"faster_whisper": types.SimpleNamespace(WhisperModel=FakeModel)}), \
+                mock.patch("src.lyrics._load_audio", return_value=[0.0]):
             result = transcribe_lyrics("vocals.wav", device="cpu")
         self.assertEqual(result["language"], "ko")
         self.assertEqual([w["text"] for w in result["words"]], ["사랑해요"])
         self.assertEqual(result["lines"], ["사랑해요"])
+
+    def test_language_choice(self):
+        from src.lyrics import choose_language
+        self.assertEqual(choose_language(None, "en", {"en": 0.9}), "en")
+        self.assertEqual(choose_language("ko", "ko", {"ko": 0.9}), "ko")
+        # an English song with Korean requested: transcribed as English
+        self.assertEqual(choose_language("ko", "en", {"en": 0.97, "ko": 0.001}), "en")
+        # unsure detection, or the requested language still plausible: the choice stands
+        self.assertEqual(choose_language("ko", "en", {"en": 0.6, "ko": 0.2}), "ko")
+        self.assertEqual(choose_language("ko", "ja", {"ja": 0.85, "ko": 0.1}), "ko")
+
+    def test_requested_language_is_checked_against_the_song(self):
+        W = types.SimpleNamespace
+        seen = {}
+
+        class FakeModel:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def detect_language(self, audio=None, **kwargs):
+                seen["detect"] = kwargs
+                return "en", 0.97, [("en", 0.97), ("ko", 0.001)]
+
+            def transcribe(self, audio, language=None, **kwargs):
+                seen["language"] = language
+                seg = W(text=" hello world", no_speech_prob=0.1, compression_ratio=1.2,
+                        words=[W(start=0.0, end=0.5, word=" hello", probability=0.9)])
+                return iter([seg]), W(language=language, language_probability=1.0)
+
+        fake = types.SimpleNamespace(WhisperModel=FakeModel)
+        with mock.patch.dict(sys.modules, {"faster_whisper": fake}), mock.patch("src.lyrics._load_audio", return_value=[0.0]):
+            result = transcribe_lyrics("vocals.wav", device="cpu", language="ko")
+        self.assertEqual(seen["language"], "en")
+        self.assertTrue(seen["detect"]["vad_filter"])
+        self.assertEqual((result["language"], result["requested"], result["detected"]), ("en", "ko", "en"))
 
     def test_gpu_failure_falls_back_to_cpu(self):
         import src.pipeline as pipeline
