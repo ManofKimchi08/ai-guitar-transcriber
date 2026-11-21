@@ -32,7 +32,16 @@ ENVELOPE_LATENCY = 0.016
 SUBDIVISION_RATIO = 0.55  # every other pulse this much quieter: the pulse is the eighth note
 HALF_TIME_RATIO = 0.8     # points between slow pulses this loud: the pulse is every other beat...
 BACKBEAT_RATIO = 0.7      # ...unless kick and snare alternate pulse by pulse (a real backbeat)
-TRIPLE_METER_MARGIN = 1.25  # bars of 3 must stand out this much more than bars of 4
+TRIPLE_METER_MARGIN = 1.25  # bars of 3 must stand out this much more than bars of 4...
+TRIPLE_METER_FLOOR = 0.3    # ...and clearly at all (z-score units): 4/4 songs with no clear
+                            # bar pattern scored 0.07 vs 0.04 and were read as 3/4; waltzes score 0.75+
+# The half-time rule doubles a slow pulse only up to this tempo. Measured on 20 Slakh band
+# mixes and 40 GuitarSet recordings, its loudness cues fired on correctly tracked 90-103
+# BPM songs (busy eighth notes are as loud as the beats) and doubled them to 180-207; a
+# 176 BPM song tracked at 88 still doubles. The trade-off: songs over 180 tracked at half
+# speed stay there (Ballroom quicksteps, ~200 BPM, now read at ~100: the same cues could
+# not tell them from the 100 BPM songs), a readable score in cut time.
+MAX_DOUBLED_BPM = 180
 
 
 def _number_pulses(times: np.ndarray) -> np.ndarray:
@@ -140,7 +149,7 @@ def analyze_beat_map(audio_path: str, default_bpm: float = 120.0) -> dict:
     backbeat = min(kicks[0::2].mean(), kicks[1::2].mean()) < BACKBEAT_RATIO * max(kicks[0::2].mean(), kicks[1::2].mean())
     if bpm > 220 or (bpm > 130 and alternates and bpm / 2 >= 60):
         grid = grid[0::2] if even >= odd else grid[1::2]  # eighth-note pulse: the loud ones are beats
-    elif bpm < 110 and between >= HALF_TIME_RATIO and not backbeat and bpm * 2 <= 220:
+    elif bpm < 110 and between >= HALF_TIME_RATIO and not backbeat and bpm * 2 <= MAX_DOUBLED_BPM:
         grid = np.sort(np.concatenate([grid, halfway]))  # half-time pulse
     bpm = 60.0 * (len(grid) - 1) / float(grid[-1] - grid[0])  # the average over the tracked span
     if not 50 <= bpm <= 220 or len(grid) < 8:
@@ -185,6 +194,6 @@ def analyze_beat_map(audio_path: str, default_bpm: float = 120.0) -> dict:
             means = [beat_evidence[j::m].mean() for j in range(m)]
             return max(means) - float(np.mean(beat_evidence)), int(np.argmax(means))
         (triple, phase), (quadruple, _) = standout(3), standout(4)
-        if triple > TRIPLE_METER_MARGIN * max(quadruple, 1e-9):
+        if triple > TRIPLE_METER_FLOOR and triple > TRIPLE_METER_MARGIN * max(quadruple, 1e-9):
             beats_per_bar, downbeat = 3, float(beat_times[phase])
     return {"bpm": float(bpm), "downbeat": downbeat, "beats": beats, "beats_per_bar": beats_per_bar}

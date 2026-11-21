@@ -166,6 +166,32 @@ class TestDrumTranscription(unittest.TestCase):
         pred = transcribe("kicks_only", y, sr)
         self.assertEqual([p for _, p in pred], [KICK] * 12)
 
+    def test_hats_in_band_limited_audio(self):
+        """A stem separated from a 16 kHz mix is stored at 44.1 kHz with nothing above 8 kHz:
+        the hats are still found (the cymbal bands follow the audio, not the file's rate)."""
+        import librosa
+        y, sr, truth = make_beat(bpm=110, seed=2)
+        y = librosa.resample(librosa.resample(y, orig_sr=sr, target_sr=16000), orig_sr=16000, target_sr=sr)
+        pred = transcribe("band_limited", y, sr)
+        for pitch in (KICK, SNARE):
+            self.assertEqual(match(truth, pred, pitch)[:3], (12, 12, 0) if pitch == KICK else (8, 8, 0))
+        found, total, false, _ = match(truth, pred, CLOSED)
+        self.assertGreaterEqual(found, 0.75 * total, f"closed hats {found}/{total}")
+        self.assertEqual(false, 0)
+
+    def test_boomy_snare_is_not_a_kick(self):
+        """An electronic snare with a big 150-200 Hz body (more there than below 80 Hz) is a
+        snare, not a kick, even when it is as loud in the low band as the kicks."""
+        y, sr, truth = make_beat(bpm=100, seed=3)
+        t = np.arange(int(0.25 * sr)) / sr
+        body = 1.2 * (np.sin(2 * np.pi * 170 * t) + 0.6 * np.sin(2 * np.pi * 120 * t)) * np.exp(-t / 0.08)
+        for when, pitch in truth:
+            if pitch == SNARE:
+                i = int(when * sr)
+                y[i:i + len(body)] += body[:len(y) - i]
+        pred = transcribe("boomy_snare", y / np.max(np.abs(y)) * 0.9, sr)
+        self.assertEqual(match(truth, pred, KICK)[:3], (12, 12, 0))
+
     def test_silence_gives_no_hits(self):
         self.assertEqual(transcribe("silence", np.zeros(44100 * 2), 44100), [])
 

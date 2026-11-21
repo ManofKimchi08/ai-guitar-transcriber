@@ -4,7 +4,8 @@ Transcribes a drum audio track (drums.wav) into a standard General MIDI drum fil
 
 Each hit is found where a frequency band's level jumps (a real attack, not just loudness),
 then classified by what that attack looks like:
-- Kick (36): attack in the low band (40-120 Hz).
+- Kick (36): attack in the low band (40-120 Hz), with more weight below 80 Hz than at
+  150-300 Hz (a snare, tom or cymbal hit's low end is the other way round).
 - Snare (38): attack in the snare-wire noise band (1-5 kHz) together with the shell
   body (150-350 Hz), so kick harmonics or a hi-hat alone are not taken for a snare.
 - Hi-hat / cymbal (42 / 46 / 49): attack in the high band (7-16 kHz); a crash also
@@ -32,10 +33,28 @@ HAT_UNDER_RING_DB = 3.0    # a hat under a ringing cymbal raises the high band a
 HAT_OWN_RISE_DB = 2.0      # ...this much more than it raises 3-6 kHz
 OPEN_FADE_DB = 10.0       # an open hat fades slower than this (dB per 100 ms); a closed one ~40
 CRASH_FADE_DB = 6.0       # ...and a crash slower still
+# A kick's sub band (30-80 Hz) outweighs 150-300 Hz: typically +8..+23 dB on the kicks of
+# 20 Slakh drum tracks, -8..-38 dB on the snare / crash hits whose low end was taken for
+# kicks (kick F1 0.89 -> 0.91 over the 20; -4 dB also dropped some soft real kicks)
+KICK_SUB_OVER_LOWMID_DB = -8.0
 
 
 def hop_samples(sr: int) -> int:
     return max(1, int(HOP_SEC * sr))
+
+
+def content_bandwidth(audio: np.ndarray, sr: int) -> float:
+    """
+    The highest frequency (Hz) the recording really holds: where its average spectrum
+    falls 60 dB below its 100 Hz - 5 kHz level. A 16 kHz source resampled to 44.1 kHz
+    (e.g. a separated stem) keeps its sample rate but nothing above 8 kHz.
+    """
+    from scipy.signal import welch
+    f, psd = welch(audio, sr, nperseg=4096)
+    db = 10 * np.log10(psd + 1e-20)
+    ref = np.percentile(db[(f >= 100) & (f <= 5000)], 95)
+    above = f[db > ref - 60.0]
+    return float(above.max()) if len(above) else 0.5 * sr
 
 
 def band_level_db(audio: np.ndarray, sr: int, low: float, high: float) -> np.ndarray:
@@ -115,8 +134,9 @@ def transcribe_drums(drum_wav_path: str, output_midi_path: str) -> str:
     body = band_level_db(audio, sr, 150, 350)
     wires = band_level_db(audio, sr, 1000, 5000)
     mid_high = band_level_db(audio, sr, 3000, 6000)
-    # Cymbal bands up to 16 kHz; a low sample rate (22.05 kHz: top 9.9 kHz) shifts them down
-    top = min(16000, 0.45 * sr)
+    # Cymbal bands up to 16 kHz; a low sample rate (22.05 kHz: top 9.9 kHz) or audio that
+    # stops short of it (a 16 kHz source resampled to 44.1 kHz) shifts them down
+    top = min(16000, 0.45 * sr, 0.95 * content_bandwidth(audio, sr))
     high = band_level_db(audio, sr, min(7000, 0.6 * top), top)
     very_high = band_level_db(audio, sr, min(10000, 0.75 * top), top)
 
@@ -150,7 +170,10 @@ def transcribe_drums(drum_wav_path: str, output_midi_path: str) -> str:
 
     # Kick: a loud low-band attack (quiet ones are other drums' low end). The low band
     # rises slowly, more so over a previous kick's tail, hence the 25 ms rise window.
-    kick_hits = hits_in(low, -15.0, min_gap_sec=0.09, rise_frames=5)
+    sub = band_level_db(audio, sr, 30, 80)
+    low_mid = band_level_db(audio, sr, 150, 300)
+    kick_hits = [(a, f) for a, f in hits_in(low, -15.0, min_gap_sec=0.09, rise_frames=5)
+                 if sub[f] - low_mid[f] > KICK_SUB_OVER_LOWMID_DB]
     for attack, f in kick_hits:
         add(36, attack, 0.15, velocity(low, f))
 

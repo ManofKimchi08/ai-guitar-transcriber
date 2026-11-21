@@ -1,6 +1,6 @@
 """
 Tests for the beat map on synthetic band audio with known beat times: bar lines that
-follow a drifting tempo, the tempo octave (eighth-note or half-time tracking), bars of
+follow a drifting tempo, the tempo octave (eighth-note or half-time tracking, busy eighths), bars of
 3 (a waltz) against bars of 4, and the score's playback tempo following the bars.
 """
 
@@ -80,6 +80,20 @@ def waltz(beats, seed=0):
     return y / np.max(np.abs(y))
 
 
+def busy(beats, seed=0):
+    """The band with an eighth-note guitar strum on every beat and every "and", about as
+    loud as the drums (the in-between eighths are as loud as the beats)."""
+    y = band(beats, seed=seed)
+    period = np.diff(beats, append=2 * beats[-1] - beats[-2])
+    tt = np.arange(int(0.2 * SR)) / SR
+    strum = sum(np.sin(2 * np.pi * pretty_midi.note_number_to_hz(p) * tt) for p in (52, 55, 59, 64)) * np.exp(-12 * tt)
+    for j, t in enumerate(beats):
+        for half in (0.0, 0.5):
+            i = int((t + half * period[j]) * SR)
+            y[i:i + len(strum)] += 0.35 * strum[:max(0, len(y) - i)]
+    return y / np.max(np.abs(y))
+
+
 def write(name, y):
     os.makedirs(OUT_DIR, exist_ok=True)
     path = os.path.join(OUT_DIR, name + ".wav")
@@ -135,6 +149,15 @@ class TestBeatMap(unittest.TestCase):
             bar = 4 * 60.0 / bpm
             error = (beat_map["downbeat"] - beats[0] + bar / 2) % bar - bar / 2
             self.assertLess(abs(error), 0.03, f"{bpm} BPM downbeat off by {error:.3f}s")
+
+    def test_busy_eighths_are_not_doubled(self):
+        """A 90-105 BPM song with loud eighth notes between the beats keeps its tempo (it was
+        read as half-time and doubled to ~200, like 3 of 20 Slakh band mixes)."""
+        for bpm, seed in ((92, 1), (100, 1), (100, 2), (104, 1)):
+            beats = beat_times(np.full(48, float(bpm)))
+            beat_map = analyze_beat_map(write(f"busy_{bpm}_{seed}", busy(beats, seed=seed)))
+            self.assertLess(abs(beat_map["bpm"] / bpm - 1), 0.01, f"{bpm} BPM read as {beat_map['bpm']:.1f}")
+            self.assertEqual(beat_map["beats_per_bar"], 4)
 
     def test_bars_of_three_or_four(self):
         """A waltz gets bars of 3 on its downbeat; a 4/4 groove keeps bars of 4."""

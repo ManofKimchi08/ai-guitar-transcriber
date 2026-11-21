@@ -18,7 +18,7 @@ from src.drum_transcriber import transcribe_drums
 from src.tab_builder import optimize_tablature, build_musicxml_score, assign_chord_strings, quantize_onsets, GUITAR_TUNING, BASS_TUNING
 from src.tab_builder import BAR_DIVISIONS, SIXTEENTH
 from src.tab_builder import estimate_key
-from src.chord_recognizer import STANDARD_VOICINGS
+from src.chord_recognizer import STANDARD_VOICINGS, candidate_voicings
 from src.pdf_exporter import convert_ly_to_tab_style
 from src.fretboard_editor import ScoreFretEditor
 
@@ -132,8 +132,9 @@ class TestBandTranscriber(unittest.TestCase):
         self.assertEqual(root.tag, "score-partwise")
 
     def test_chord_voicings_stay_playable(self):
-        """Every recognizer voicing must come back from MIDI as a playable shape."""
-        for name, voicing in STANDARD_VOICINGS.items():
+        """Every recognizer voicing (open and barre) must come back from MIDI as a playable shape."""
+        voicings = [(name, v) for name in STANDARD_VOICINGS for v in candidate_voicings(name)]
+        for name, voicing in voicings:
             notes = [pretty_midi.Note(velocity=80, pitch=GUITAR_TUNING[s] + f, start=0.0, end=1.0)
                      for s, f in voicing]
             shape = [(s, f) for _, s, f in assign_chord_strings(notes, GUITAR_TUNING)]
