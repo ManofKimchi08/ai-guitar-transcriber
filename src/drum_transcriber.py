@@ -146,7 +146,10 @@ def transcribe_drums(drum_wav_path: str, output_midi_path: str) -> str:
     # Cymbal bands up to 16 kHz; a low sample rate (22.05 kHz: top 9.9 kHz) or audio that
     # stops short of it (a 16 kHz source resampled to 44.1 kHz) shifts them down
     top = min(16000, 0.45 * sr, 0.95 * content_bandwidth(audio, sr))
-    high = band_level_db(audio, sr, min(7000, 0.6 * top), top)
+    # On band-limited audio (top ~7.3 kHz) the band starts at 80% of the top: from 60%
+    # (4.4 kHz) it reached into the snare wires, and on the PC one Slakh song's extra
+    # "hats" were mostly wrong (precision 0.53 -> 0.26); full-band audio keeps 7-16 kHz
+    high = band_level_db(audio, sr, min(7000, 0.8 * top), top)
     very_high = band_level_db(audio, sr, min(10000, 0.75 * top), top)
 
     loud = {}
