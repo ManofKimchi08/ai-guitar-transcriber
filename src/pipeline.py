@@ -14,7 +14,7 @@ from src.separator import separate_stems
 from src.guitar_splitter import split_guitar_track
 from src.stem_gate import gate_stem, load_mix
 from src.drum_transcriber import transcribe_drums
-from src.pitch_transcriber import transcribe_pitch
+from src.pitch_transcriber import transcribe_pitch, transcribe_guitar
 from src.tab_builder import build_musicxml_score
 from src.beat_map import analyze_beat_map
 from src.youtube_downloader import download_youtube_audio
@@ -275,8 +275,8 @@ def run_pipeline(
     # Step 3: Transcription to MIDI
     # -------------------------------------------------------------
     stage("transcribe")
-    progress("3/4 단계: 각 악기별 고정밀 MIDI 변환 중 (TorchCREPE & CQT Chords)...", 0.65)
-    log("\n--- [Step 3] 고정밀 MIDI 전사 (TorchCREPE GPU & CQT Chords) ---")
+    progress("3/4 단계: 각 악기별 고정밀 MIDI 변환 중 (TorchCREPE & basic-pitch)...", 0.65)
+    log("\n--- [Step 3] 고정밀 MIDI 전사 (TorchCREPE GPU & basic-pitch) ---")
 
     crepe_batch = vram_profile["crepe_batch_size"]
     jobs = [
@@ -284,10 +284,10 @@ def run_pipeline(
          lambda wav, mid: transcribe_drums(wav, mid)),
         ("bass", bass_wav, "bass.mid", "베이스 기타 심층 F0 추적 중 (TorchCREPE GPU 360-bin)...",
          lambda wav, mid: transcribe_pitch(wav, mid, instrument_name="bass", crepe_batch_size=crepe_batch)),
-        ("lead", lead_wav, "lead_guitar.mid", "리드 기타 솔로 멜로디 추적 중 (TorchCREPE GPU)...",
-         lambda wav, mid: transcribe_pitch(wav, mid, instrument_name="guitar_lead", crepe_batch_size=crepe_batch)),
-        ("rhythm", rhythm_wav, "rhythm_guitar.mid", "리듬 기타 다성 화음 분석 중 (CQT 크로마 & 6줄 타브 폼)...",
-         lambda wav, mid: transcribe_pitch(wav, mid, instrument_name="guitar_rhythm", crepe_batch_size=crepe_batch)),
+        ("lead", lead_wav, "lead_guitar.mid", "리드 기타 음 인식 중 (basic-pitch 다성: 겹친 기타도 모두)...",
+         lambda wav, mid: transcribe_guitar(wav, mid, "guitar_lead", crepe_batch_size=crepe_batch)),
+        ("rhythm", rhythm_wav, "rhythm_guitar.mid", "리듬 기타 음 인식 중 (basic-pitch 다성: 겹친 기타도 모두)...",
+         lambda wav, mid: transcribe_guitar(wav, mid, "guitar_rhythm", crepe_batch_size=crepe_batch)),
         ("vocals", vocals_wav, "vocals.mid", "보컬 멜로디 추적 중 (TorchCREPE GPU)...",
          lambda wav, mid: transcribe_pitch(wav, mid, instrument_name="vocals", crepe_batch_size=crepe_batch)),
     ]

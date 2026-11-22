@@ -1,14 +1,44 @@
 """
 Pitch Transcriber Module
 High-Accuracy Transcription for Bass, Lead Guitar, and Rhythm Guitar:
-1. Bass & Lead Guitar: TorchCREPE 360-bin Convolutional F0 Tracking on GPU (CUDA)
-   - Zero octave jumping, overtone-filtered fundamental bass & solo lead tracking.
-2. Rhythm Guitar: CQT Chroma-based Chord Recognition & 6-string Voicings
-3. Fallback: Spotify Basic Pitch & Librosa YIN for environments without PyTorch/CUDA.
+1. Guitar (lead and rhythm parts): Spotify basic-pitch, polyphonic, so every note of
+   every guitar sounding at once is kept (see transcribe_guitar).
+2. Bass & vocals: TorchCREPE 360-bin Convolutional F0 Tracking on GPU (CUDA)
+   - Zero octave jumping, overtone-filtered fundamental bass tracking.
+3. Without basic-pitch the guitar parts use TorchCREPE (lead) and CQT chroma chord
+   recognition with 6-string voicings (rhythm); Librosa YIN is the last fallback.
 """
 
 import os
 import pretty_midi
+
+
+def basic_pitch_available() -> bool:
+    try:
+        from basic_pitch.inference import predict  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def transcribe_guitar(audio_path: str, output_midi_path: str, part: str = "guitar_lead",
+                      crepe_batch_size: int = 1024) -> str:
+    """
+    Transcribes a guitar part ('guitar_lead' or 'guitar_rhythm') with basic-pitch.
+
+    A band's guitar stem often holds several guitars at once (Demucs puts them all in one
+    stem, and only panned ones can be told apart by position). A single-line tracker
+    (CREPE) keeps one of them and chord templates only strummed chords, so riffs,
+    arpeggios and a second guitar were lost. Against note-level ground truth (onset and
+    pitch F), polyphonic basic-pitch on the same parts scored:
+      - EGSet12 (12 solo electric guitar pieces, released after basic-pitch was trained;
+        and 6 two-guitar mixes of them): 0.435 -> 0.731 (two guitars: 0.23 -> 0.67)
+      - 6 Slakh band songs' Demucs guitar stems: 0.189 -> 0.289
+    Without basic-pitch the old engines are used.
+    """
+    if basic_pitch_available():
+        return transcribe_with_basic_pitch(audio_path, output_midi_path, instrument_name=part)
+    return transcribe_pitch(audio_path, output_midi_path, instrument_name=part, crepe_batch_size=crepe_batch_size)
 
 
 def transcribe_pitch(

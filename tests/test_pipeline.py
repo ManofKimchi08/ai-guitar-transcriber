@@ -112,6 +112,16 @@ class TestBandTranscriber(unittest.TestCase):
             # Verify pitch match: GUITAR_TUNING[s] + f == note.pitch
             self.assertEqual(GUITAR_TUNING[s] + f, note.pitch)
 
+    def test_single_notes_between_chords_stay_near_the_hand(self):
+        """After a G chord that only fits at the 10th-12th frets, a single F4 is fretted
+        there (G string, 10th fret), not on the high E string's 1st fret."""
+        chord = [pretty_midi.Note(velocity=90, pitch=p, start=0.0, end=0.5) for p in (67, 71, 74)]
+        single = pretty_midi.Note(velocity=90, pitch=65, start=0.5, end=1.0)
+        placed = optimize_tablature(chord + [single], GUITAR_TUNING)
+        self.assertEqual(sorted(f for n, s, f in placed if n.start == 0.0), [10, 12, 12])
+        (s, f), = [(s, f) for n, s, f in placed if n is single]
+        self.assertEqual((s, f), (3, 10))
+
     def test_musicxml_generation(self):
         """Test building full multi-track MusicXML score."""
         drum_mid = os.path.join(self.test_dir, "test_drums.mid")
@@ -372,6 +382,24 @@ class TestBandTranscriber(unittest.TestCase):
         # Instrument names get room left of the staves (they ran off the page)
         self.assertIn("\\layout {\n    indent = 30\\mm\n    short-indent = 18\\mm\n    \\context { \\Score", out)
         self.assertEqual(out.count("indent = 30"), 1)
+
+
+class TestGuitarEngine(unittest.TestCase):
+    def test_guitar_parts_use_basic_pitch_or_fall_back(self):
+        """Both guitar parts go to polyphonic basic-pitch; without it, to the old engines
+        (CREPE for the lead, chord recognition for the rhythm part)."""
+        from unittest import mock
+        import src.pitch_transcriber as pt
+        for available, engine in ((True, "transcribe_with_basic_pitch"), (False, "transcribe_pitch")):
+            with mock.patch.object(pt, "basic_pitch_available", return_value=available), \
+                    mock.patch.object(pt, "transcribe_with_basic_pitch", return_value="bp") as bp, \
+                    mock.patch.object(pt, "transcribe_pitch", return_value="old") as old:
+                for part in ("guitar_lead", "guitar_rhythm"):
+                    pt.transcribe_guitar("in.wav", "out.mid", part)
+                used = bp if available else old
+                self.assertEqual([c.kwargs.get("instrument_name") for c in used.call_args_list],
+                                 ["guitar_lead", "guitar_rhythm"], engine)
+                (old if available else bp).assert_not_called()
 
 
 class TestPipelineLeftovers(unittest.TestCase):

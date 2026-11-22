@@ -295,17 +295,29 @@ def optimize_tablature(notes: list, tuning: dict, max_fret: int = 22) -> list:
     has_polyphony = any(len(c) > 1 for c in clusters)
     
     if has_polyphony:
-        # Polyphonic track (e.g. Rhythm Guitar chords)
+        # Polyphonic track (chords, riffs and arpeggios between them): chords get playable
+        # shapes; a single note stays near where the hand last fretted (lowest fret only
+        # before anything is fretted), so a line between chords does not jump to open
+        # strings and back
         all_res = []
+        hand = None
         for c in clusters:
             if len(c) > 1:
-                all_res.extend(assign_chord_strings(c, tuning, max_fret=min(max_fret, 16)))
+                placed = assign_chord_strings(c, tuning, max_fret=min(max_fret, 16))
+                all_res.extend(placed)
+                fretted = [f for _, _, f in placed if f > 0]
             else:
-                # Single note in chord track
                 cands = get_fret_candidates(c[0].pitch, tuning, max_fret=min(max_fret, 16))
-                if cands:
+                if not cands:
+                    continue
+                if hand is None:
                     best = min(cands, key=lambda x: (x[1], -x[0]))
-                    all_res.append((c[0], best[0], best[1]))
+                else:
+                    best = min(cands, key=lambda x: (0.5 if x[1] == 0 else abs(x[1] - hand), x[1]))
+                all_res.append((c[0], best[0], best[1]))
+                fretted = [best[1]] if best[1] > 0 else []
+            if fretted:
+                hand = float(np.mean(fretted))
         return all_res
 
     # Monophonic track (e.g. Bass or Lead Guitar solo): use DP Viterbi
