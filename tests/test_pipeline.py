@@ -187,6 +187,44 @@ class TestBandTranscriber(unittest.TestCase):
         root = self._build_single_part("lead", run)
         self.assertEqual(root.findall(".//note/chord"), [])
 
+    def test_chords_from_several_guitars_stay_playable(self):
+        """Notes of two guitars sounding together (6:3 5:2 4:0 3:16 2:0 1:2 came out of
+        a Slakh song) are cut down to a shape within MAX_CHORD_SPAN frets, bass kept."""
+        from src.tab_builder import MAX_CHORD_SPAN
+        chord = [pretty_midi.Note(velocity=90, pitch=p, start=0.0, end=0.5) for p in (43, 47, 50, 71, 59, 66)]
+        placed = optimize_tablature(chord, GUITAR_TUNING)
+        frets = [f for _, _, f in placed if f > 0]
+        self.assertLessEqual(max(frets) - min(frets), MAX_CHORD_SPAN)
+        self.assertEqual(len({s for _, s, _ in placed}), len(placed))
+        self.assertIn(43, [n.pitch for n, _, _ in placed])
+        self.assertGreaterEqual(len(placed), 4)
+
+    def test_rhythm_guitar_strums_are_not_split_into_32nds(self):
+        """A strum whose last notes come 50 ms late is one chord, and the rhythm guitar is
+        never written in 32nds (a Slakh song had up to 8 strums a beat)."""
+        notes = []
+        for k in range(8):  # eighth-note strums at 120 BPM, the top notes 50 ms late
+            t = 0.25 * k
+            notes += [pretty_midi.Note(velocity=90, pitch=p, start=t, end=t + 0.2) for p in (40, 47, 52)]
+            notes += [pretty_midi.Note(velocity=90, pitch=p, start=t + 0.05, end=t + 0.2) for p in (56, 59)]
+            notes.append(pretty_midi.Note(velocity=90, pitch=64, start=t + 0.08, end=t + 0.2))  # a stray note
+        root = self._build_single_part("rhythm", notes)
+        starts = [n for n in root.findall(".//note") if n.find("chord") is None and n.find("rest") is None]
+        durations = {int(n.find("duration").text) for n in starts}
+        divisions = int(root.find(".//divisions").text)
+        self.assertGreaterEqual(min(durations), divisions // 4)  # nothing shorter than a 16th
+        notes_el = [n for n in root.findall(".//note") if n.find("rest") is None]
+        sizes, size = [], 0
+        for n in notes_el:
+            if n.find("chord") is None:
+                if size:
+                    sizes.append(size)
+                size = 1
+            else:
+                size += 1
+        sizes.append(size)
+        self.assertGreaterEqual(max(sizes), 5)  # the strum's late notes joined its chord
+
     def test_measures_are_exactly_full(self):
         """Every measure must add up to one 4/4 bar, chords counted once."""
         notes = []

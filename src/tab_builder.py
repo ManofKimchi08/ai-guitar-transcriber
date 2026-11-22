@@ -100,6 +100,14 @@ def estimate_key(notes: list) -> tuple:
 # its notes are that fast, and triplets where its notes divide it in three.
 DIVISIONS = 24
 THIRTY_SECOND, SIXTEENTH, EIGHTH, QUARTER = 3, 6, 12, 24
+# A chord's fretted notes stay within this many frets (lowest to highest). Several
+# guitars sounding together in one stem (polyphonic transcription keeps them all) gave
+# shapes like 6:3 5:2 4:0 3:16 2:0 1:2; notes that no playable shape can hold are left out.
+MAX_CHORD_SPAN = 4
+# Guitar notes struck within this long of a chord's first note belong to it (a strum
+# spreads over 20-50 ms, and two guitars on the same beat are a little apart); at 35 ms
+# they came out as 32nds, up to 8 strums a beat
+STRUM_SPREAD = 0.06
 TRIPLET_SIXTEENTH, TRIPLET_EIGHTH = 4, 8
 BEATS_PER_BAR = 4
 BAR_DIVISIONS = BEATS_PER_BAR * QUARTER  # a 4/4 bar
@@ -200,6 +208,23 @@ def get_fret_candidates(pitch: int, tuning: dict, max_fret: int = 22):
     return candidates
 
 
+def strum_clusters(items: list, start=lambda it: it.start, tol: float = 0.035) -> list:
+    """
+    Groups items (sorted by start) that are struck together: within `tol` of a group's
+    first one, or, once the group is a chord (2+ notes), within STRUM_SPREAD of it, so a
+    strum's late notes join it while the notes of a fast single-note run stay apart.
+    """
+    groups = []
+    for it in items:
+        if groups:
+            gap = start(it) - start(groups[-1][0])
+            if gap <= tol or (len(groups[-1]) >= 2 and gap <= STRUM_SPREAD):
+                groups[-1].append(it)
+                continue
+        groups.append([it])
+    return groups
+
+
 def _chord_shape_cost(shape: list, string_order: list) -> float:
     """
     Playability cost of a chord shape [(string, fret), ...]: prefers a small fret
@@ -220,52 +245,55 @@ def assign_chord_strings(chord_notes: list, tuning: dict, max_fret: int = 16) ->
     Ascending pitches go on ascending strings, and among those shapes the most
     playable one wins (see _chord_shape_cost), so chord voicings that lost their
     string info on the way through MIDI come back as playable shapes.
-    Guarantees 0 string collisions per chord.
+    Guarantees 0 string collisions per chord, and a fretted span of at most
+    MAX_CHORD_SPAN frets: when no such shape holds every note, the most notes that fit
+    one are kept (the lowest note first), the rest left out.
     """
     if not chord_notes:
         return []
 
+    from itertools import combinations
     sorted_notes = sorted(chord_notes, key=lambda x: x.pitch)
     string_order = sorted(list(tuning.keys()), reverse=True)  # [6, 5, 4, 3, 2, 1]
 
-    best_shape, best_cost = None, float('inf')
+    def best_shape(notes):
+        best, best_cost = None, float('inf')
 
-    def search(i, first_string_idx, shape):
-        nonlocal best_shape, best_cost
-        if i == len(sorted_notes):
-            cost = _chord_shape_cost(shape, string_order)
-            if cost < best_cost:
-                best_shape, best_cost = list(shape), cost
-            return
-        for k in range(first_string_idx, len(string_order)):
-            s = string_order[k]
-            f = sorted_notes[i].pitch - tuning[s]
-            if 0 <= f <= max_fret:
+        def search(i, first_string_idx, shape, lo, hi):
+            nonlocal best, best_cost
+            if i == len(notes):
+                cost = _chord_shape_cost(shape, string_order)
+                if cost < best_cost:
+                    best, best_cost = list(shape), cost
+                return
+            for k in range(first_string_idx, len(string_order)):
+                s = string_order[k]
+                f = notes[i].pitch - tuning[s]
+                if not 0 <= f <= max_fret:
+                    continue
+                nlo, nhi = (min(lo, f), max(hi, f)) if f > 0 else (lo, hi)
+                if nhi - nlo > MAX_CHORD_SPAN:
+                    continue
                 shape.append((s, f))
-                search(i + 1, k + 1, shape)
+                search(i + 1, k + 1, shape, nlo, nhi)
                 shape.pop()
 
-    search(0, 0, [])
-    if best_shape is not None:
-        return [(n, s, f) for n, (s, f) in zip(sorted_notes, best_shape)]
+        search(0, 0, [], 99, -1)
+        return best, best_cost
 
-    # No shape fits every note (more notes than strings, or out of range):
-    # place what fits greedily, lowest fret first.
-    res = []
-    used_strings = set()
-    for n in sorted_notes:
-        cands = []
-        for s in string_order:
-            if s in used_strings:
+    for size in range(min(len(sorted_notes), len(string_order)), 0, -1):
+        found = None
+        for keep in combinations(range(len(sorted_notes)), size):
+            notes = [sorted_notes[k] for k in keep]
+            shape, cost = best_shape(notes)
+            if shape is None:
                 continue
-            f = n.pitch - tuning[s]
-            if 0 <= f <= max_fret:
-                cands.append((s, f))
-        if cands:
-            best = min(cands, key=lambda x: (x[1], -x[0]))
-            used_strings.add(best[0])
-            res.append((n, best[0], best[1]))
-    return res
+            key = (0 if keep[0] == 0 else 1, cost)  # keeping the bass note comes first
+            if found is None or key < found[0]:
+                found = (key, notes, shape)
+        if found:
+            return [(n, s, f) for n, (s, f) in zip(found[1], found[2])]
+    return []
 
 
 def optimize_tablature(notes: list, tuning: dict, max_fret: int = 22) -> list:
@@ -277,20 +305,9 @@ def optimize_tablature(notes: list, tuning: dict, max_fret: int = 22) -> list:
     if not notes:
         return []
 
-    # Group notes by start time into clusters (simultaneous within 35ms)
+    # Group notes struck together (a chord within 35 ms, its strum within STRUM_SPREAD)
     sorted_notes = sorted(notes, key=lambda x: (x.start, x.pitch))
-    clusters = []
-    curr_cluster = []
-    for n in sorted_notes:
-        if not curr_cluster:
-            curr_cluster.append(n)
-        elif abs(n.start - curr_cluster[0].start) <= 0.035:
-            curr_cluster.append(n)
-        else:
-            clusters.append(curr_cluster)
-            curr_cluster = [n]
-    if curr_cluster:
-        clusters.append(curr_cluster)
+    clusters = strum_clusters(sorted_notes)
 
     has_polyphony = any(len(c) > 1 for c in clusters)
     
@@ -419,7 +436,8 @@ def triplet_beats(beat_positions: list) -> set:
 
 def quantize_onsets(items: list, seconds_per_div: float = None, merge_same_slot: bool = False,
                     onset_tol: float = 0.035, origin: float = 0.0, coarse: int = SIXTEENTH,
-                    to_grid=None, beat: int = QUARTER, triplets: set = frozenset()) -> list:
+                    to_grid=None, beat: int = QUARTER, triplets: set = frozenset(),
+                    allow_fine: bool = True) -> list:
     """
     Snaps (note, string, fret) items onto the score grid, slot 0 being the first beat of
     bar 1: `to_grid(seconds)` gives the (fractional) position in divisions along the
@@ -431,18 +449,26 @@ def quantize_onsets(items: list, seconds_per_div: float = None, merge_same_slot:
     passages; a beat switches to the finer step (32nds, triplet 16ths) only where its
     notes are that fast. A note's end snaps to the grid of the beat it ends in.
 
-    Notes struck together (within onset_tol) share a slot as one chord. For pitched
+    Notes struck together (within onset_tol, or a strum's late notes: strum_clusters)
+    share a slot as one chord, and chords are never written finer than the coarse grid.
+    For pitched
     parts, a separately struck note that still rounds into an occupied slot moves to the
     next grid step if that is at most a 16th late, and is dropped otherwise: stacking it
     would turn a fast run into an unplayable same-string chord.
     With merge_same_slot (drums), different instruments may share a slot instead.
+    Without allow_fine no beat goes finer than the coarse grid (the rhythm guitar: its
+    chords and the single notes between them came out up to 8 to a beat).
     """
-    groups = []
-    for it in sorted(items, key=lambda it: (it[0].start, it[0].pitch)):
-        if groups and it[0].start - groups[-1][0][0].start <= onset_tol:
-            groups[-1].append(it)
-        else:
-            groups.append([it])
+    ordered = sorted(items, key=lambda it: (it[0].start, it[0].pitch))
+    if merge_same_slot:
+        groups = []
+        for it in ordered:
+            if groups and it[0].start - groups[-1][0][0].start <= onset_tol:
+                groups[-1].append(it)
+            else:
+                groups.append([it])
+    else:
+        groups = strum_clusters(ordered, start=lambda it: it[0].start, tol=onset_tol)
     if not merge_same_slot:
         # A chord can hold only one note per string; keep the first on each
         for k, group in enumerate(groups):
@@ -472,13 +498,15 @@ def quantize_onsets(items: list, seconds_per_div: float = None, merge_same_slot:
     # off the coarse grid. For drums, only the same piece struck twice (a roll) counts;
     # different pieces close together just play together.
     fine_beats = set()
-    for k in range(1, len(groups)):
+    for k in range(1, len(groups) if allow_fine else 0):
         a, b = positions[k - 1], positions[k]
         big, small = steps(beat_of(b))
         if nearest(a, big) != nearest(b, big) or b - a < 0.6 * small:
             continue
         if merge_same_slot and not ({n.pitch for n, _, _ in groups[k - 1]} & {n.pitch for n, _, _ in groups[k]}):
             continue
+        if not merge_same_slot and (len(groups[k - 1]) > 1 or len(groups[k]) > 1):
+            continue  # chords stay on the coarse grid: two strums a 32nd apart are one strum
         off_grid = [p for p in (a, b) if nearest(p, steps(beat_of(p))[1]) % steps(beat_of(p))[0]]
         fine_beats.update(beat_of(p) for p in (off_grid or [b]))
 
@@ -960,7 +988,7 @@ def build_musicxml_score(
     for (part_key, pid, pname, pabbr, data, ptype), triplets in zip(parts_info, part_triplets):
         items = [(n, None, None) for n in data] if ptype == "drum" else data
         events = quantize_onsets(items, merge_same_slot=(ptype == "drum"), to_grid=to_grid,
-                                 beat=meter.beat, triplets=triplets)
+                                 beat=meter.beat, triplets=triplets, allow_fine=(part_key != "rhythm"))
         segments, end_slot = split_into_bars(events, meter.bar, tie=(ptype != "drum"),
                                              beat=meter.beat, triplets=triplets)
         last_slot = max(last_slot, end_slot)
