@@ -42,6 +42,51 @@ TRIPLE_METER_FLOOR = 0.3    # ...and clearly at all (z-score units): 4/4 songs w
 # speed stay there (Ballroom quicksteps, ~200 BPM, now read at ~100: the same cues could
 # not tell them from the 100 BPM songs), a readable score in cut time.
 MAX_DOUBLED_BPM = 180
+# librosa's tracker leans towards 120 BPM, and on waltzes it often settled on a pulse the
+# music does not repeat with (Ballroom: waltzes at ~87 BPM tracked at ~130, Viennese waltzes
+# at ~177 tracked at ~116). Such a pulse stands out: the onset envelope's autocorrelation at
+# its period is well under the strongest one (median 0.56-0.74 of it, against 0.94-1.00 for
+# correctly tracked songs). The song is then tracked again at the strong period nearest to it
+# (up to MAX_DOUBLED_BPM).
+WEAK_PULSE = 0.7         # autocorrelation at the tracked period under this share of the strongest...
+STRONG_PERIOD = 0.85     # ...re-track at the nearest period with at least this share
+TEMPO_RANGE = (40.0, 240.0)
+# A fast pulse (over 130 BPM) whose low attacks and chord changes repeat every 6 pulses
+# rather than every 8 is in threes. Measured on Ballroom (6 minus 8, z-score units): waltzes
+# +0.56 (tracked in eighths) and +1.09 (Viennese, tracked on the beat), 4/4 dances -0.15 to
+# -1.3, 90% of them under +0.06. When the pulse halfway through those 6 looks like a bar
+# start too (stronger than the other four), the pulse is the beat and 6 pulses are two bars
+# (Viennese waltzes); otherwise it is the eighth notes of a slower waltz, and every other
+# pulse is a beat.
+TRIPLE_PULSE_MARGIN = 0.3
+
+
+def _autocorrelation_curve(envelope: np.ndarray, fps: float) -> tuple:
+    """(tempi in BPM, the onset envelope's normalized autocorrelation at their periods)."""
+    import librosa
+    max_lag = int(np.ceil(60.0 * fps / TEMPO_RANGE[0])) + 2
+    ac = librosa.autocorrelate(envelope - envelope.mean(), max_size=max_lag)
+    ac = ac / (ac[0] + 1e-12)
+    bpms = np.arange(TEMPO_RANGE[0], TEMPO_RANGE[1] + 0.25, 0.5)
+    return bpms, np.interp(60.0 * fps / bpms, np.arange(len(ac)), ac)
+
+
+def corrected_tempo(envelope: np.ndarray, fps: float, tracked_bpm: float):
+    """The tempo to track again at when `tracked_bpm` is a weak period, else None."""
+    from scipy.signal import find_peaks
+    if not TEMPO_RANGE[0] <= tracked_bpm <= TEMPO_RANGE[1]:
+        return None
+    bpms, curve = _autocorrelation_curve(envelope, fps)
+    strongest = curve.max()
+    if strongest <= 0 or curve[np.argmin(np.abs(bpms - tracked_bpm))] >= WEAK_PULSE * strongest:
+        return None
+    peaks, _ = find_peaks(curve)
+    # strong periods only, and none faster than the half-time rule doubles to (on drum-less
+    # guitar recordings the eighth notes repeat as strongly: 100 BPM songs went to 195-200)
+    peaks = peaks[(curve[peaks] >= STRONG_PERIOD * strongest) & (bpms[peaks] <= MAX_DOUBLED_BPM)]
+    if not len(peaks):
+        return None
+    return float(bpms[peaks][np.argmin(np.abs(np.log2(bpms[peaks] / tracked_bpm)))])
 
 
 def _number_pulses(times: np.ndarray) -> np.ndarray:
@@ -104,6 +149,28 @@ def _strength_at(envelope: np.ndarray, times: np.ndarray, sr: int, hop: int) -> 
                      for f in frames])
 
 
+def _zscore(x: np.ndarray) -> np.ndarray:
+    return (x - x.mean()) / (x.std() + 1e-9)
+
+
+def _bar_evidence(times: np.ndarray, low_onsets: np.ndarray, chroma: np.ndarray, sr: int, hop: int) -> np.ndarray:
+    """Per time: how much it looks like a bar start (a low attack and a chord change), z-scored."""
+    import librosa
+    frames = np.clip(librosa.time_to_frames(times, sr=sr, hop_length=hop), 0, chroma.shape[1] - 1)
+    low = _strength_at(low_onsets, times, sr, hop)
+    bounds = list(frames) + [chroma.shape[1]]
+    beat_chroma = np.stack([chroma[:, a:max(b, a + 1)].mean(axis=1) for a, b in zip(bounds[:-1], bounds[1:])])
+    unit = beat_chroma / (np.linalg.norm(beat_chroma, axis=1, keepdims=True) + 1e-9)
+    change = np.concatenate([[0.0], 1.0 - np.sum(unit[1:] * unit[:-1], axis=1)])
+    return _zscore(low) + _zscore(change)
+
+
+def _standout(evidence: np.ndarray, period: int) -> tuple:
+    """(how far the strongest of `period` positions stands above the mean, that position)."""
+    means = [evidence[j::period].mean() for j in range(period)]
+    return max(means) - float(np.mean(evidence)), int(np.argmax(means))
+
+
 def constant_beats(bpm: float, downbeat: float, start: float, end: float) -> np.ndarray:
     """A steady beat grid through `downbeat` covering start..end."""
     period = 60.0 / bpm
@@ -129,6 +196,11 @@ def analyze_beat_map(audio_path: str, default_bpm: float = 120.0) -> dict:
     envelope = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop)
     tempo, frames = librosa.beat.beat_track(onset_envelope=envelope, sr=sr, hop_length=hop)
     pulses = librosa.frames_to_time(frames, sr=sr, hop_length=hop) - ENVELOPE_LATENCY
+    if len(pulses) >= 8:
+        better = corrected_tempo(envelope, sr / hop, 60.0 / float(np.median(np.diff(pulses))))
+        if better:
+            tempo, frames = librosa.beat.beat_track(onset_envelope=envelope, sr=sr, hop_length=hop, bpm=better)
+            pulses = librosa.frames_to_time(frames, sr=sr, hop_length=hop) - ENVELOPE_LATENCY
     if len(pulses) < 8:
         bpm = float(np.atleast_1d(tempo)[0]) if np.size(tempo) else default_bpm
         bpm = bpm if 50 <= bpm <= 220 else default_bpm
@@ -147,7 +219,17 @@ def analyze_beat_map(audio_path: str, default_bpm: float = 120.0) -> dict:
     low_onsets = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop, fmax=200, n_mels=8)
     kicks = _strength_at(low_onsets, grid, sr, hop)
     backbeat = min(kicks[0::2].mean(), kicks[1::2].mean()) < BACKBEAT_RATIO * max(kicks[0::2].mean(), kicks[1::2].mean())
-    if bpm > 220 or (bpm > 130 and alternates and bpm / 2 >= 60):
+    chroma = librosa.feature.chroma_stft(y=y, sr=sr, hop_length=hop)
+    in_threes = False
+    if bpm > 130 and len(grid) >= 48:
+        pulse_evidence = _bar_evidence(grid, low_onsets, chroma, sr, hop)
+        (six, six_at), (eight, _) = _standout(pulse_evidence, 6), _standout(pulse_evidence, 8)
+        in_threes = six - eight > TRIPLE_PULSE_MARGIN
+    if in_threes:
+        by_position = np.roll([pulse_evidence[j::6].mean() for j in range(6)], -six_at)
+        if by_position[3] < max(by_position[[1, 2, 4, 5]]) and bpm / 2 >= 50:
+            grid = grid[six_at % 2::2]  # eighth notes of a waltz: the bar's pulse parity are the beats
+    elif bpm > 220 or (bpm > 130 and alternates and bpm / 2 >= 60):
         grid = grid[0::2] if even >= odd else grid[1::2]  # eighth-note pulse: the loud ones are beats
     elif bpm < 110 and between >= HALF_TIME_RATIO and not backbeat and bpm * 2 <= MAX_DOUBLED_BPM:
         grid = np.sort(np.concatenate([grid, halfway]))  # half-time pulse
@@ -167,18 +249,7 @@ def analyze_beat_map(audio_path: str, default_bpm: float = 120.0) -> dict:
     if len(candidates) < 2 * positions:
         return {"bpm": float(bpm), "downbeat": float(beats[0]), "beats": beats, "beats_per_bar": 4}
 
-    cand_frames = np.clip(librosa.time_to_frames(candidates, sr=sr, hop_length=hop), 0, None)
-    low = _strength_at(low_onsets, candidates, sr, hop)
-    chroma = librosa.feature.chroma_stft(y=y, sr=sr, hop_length=hop)
-    bounds = list(np.clip(cand_frames, 0, chroma.shape[1] - 1)) + [chroma.shape[1]]
-    beat_chroma = np.stack([chroma[:, a:max(b, a + 1)].mean(axis=1) for a, b in zip(bounds[:-1], bounds[1:])])
-    unit = beat_chroma / (np.linalg.norm(beat_chroma, axis=1, keepdims=True) + 1e-9)
-    change = np.concatenate([[0.0], 1.0 - np.sum(unit[1:] * unit[:-1], axis=1)])
-
-    def zscore(x):
-        return (x - x.mean()) / (x.std() + 1e-9)
-
-    evidence = zscore(low) + zscore(change)
+    evidence = _bar_evidence(candidates, low_onsets, chroma, sr, hop)
     position = int(np.argmax([evidence[j::positions].mean() for j in range(positions)]))
     downbeat = float(candidates[position])
     if half_time_suspect and np.min(np.abs(beats - downbeat)) > 1e-6:
@@ -189,11 +260,8 @@ def analyze_beat_map(audio_path: str, default_bpm: float = 120.0) -> dict:
     on_beat = np.array([np.min(np.abs(beats - c)) < 1e-6 for c in candidates])
     beat_evidence, beat_times = evidence[on_beat], candidates[on_beat]
     beats_per_bar = 4
-    if len(beat_evidence) >= 24:
-        def standout(m):
-            means = [beat_evidence[j::m].mean() for j in range(m)]
-            return max(means) - float(np.mean(beat_evidence)), int(np.argmax(means))
-        (triple, phase), (quadruple, _) = standout(3), standout(4)
-        if triple > TRIPLE_METER_FLOOR and triple > TRIPLE_METER_MARGIN * max(quadruple, 1e-9):
+    if len(beat_evidence) >= 24 or (in_threes and len(beat_evidence) >= 6):
+        (triple, phase), (quadruple, _) = _standout(beat_evidence, 3), _standout(beat_evidence, 4)
+        if in_threes or (triple > TRIPLE_METER_FLOOR and triple > TRIPLE_METER_MARGIN * max(quadruple, 1e-9)):
             beats_per_bar, downbeat = 3, float(beat_times[phase])
     return {"bpm": float(bpm), "downbeat": downbeat, "beats": beats, "beats_per_bar": beats_per_bar}
