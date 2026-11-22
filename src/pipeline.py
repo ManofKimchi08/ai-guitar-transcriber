@@ -297,11 +297,13 @@ def run_pipeline(
     for part, wav, midi_name, message, transcribe in jobs:
         if part not in selected_parts:
             continue
+        midi_path = os.path.join(midi_dir, midi_name)
         if not wav or not os.path.exists(wav):
             log(f"  ! {part} 음원이 없어 건너뜁니다.")
+            if os.path.exists(midi_path):
+                os.remove(midi_path)  # an earlier run's MIDI would pass for this run's
             continue
         log(f"  - {message}")
-        midi_path = os.path.join(midi_dir, midi_name)
         transcribe(wav, midi_path)
         midi_paths[part] = midi_path
         log(f"  ✓ {part} MIDI: {midi_name}")

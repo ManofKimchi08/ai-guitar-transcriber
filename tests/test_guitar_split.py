@@ -144,6 +144,25 @@ class TestGuitarSplit(unittest.TestCase):
         self.assertGreater(20 * np.log10(rms(lead[:half - SR]) / rms(lead[half + SR:])), 20)
         self.assertGreater(20 * np.log10(rms(rhythm[half + SR:]) / rms(rhythm[:half - SR])), 20)
 
+    def test_chord_stabs_with_rests_are_chords(self):
+        """Comping: a three-note chord for 0.2 s each second, silence between. It is
+        chords, where a legato melody (one note at a time, never a rest) is not."""
+        import types
+        from unittest import mock
+        from src.guitar_splitter import chordal_windows
+
+        def windows(notes):
+            inference = types.SimpleNamespace(predict=lambda *a, **k: (None, None, notes))
+            fake = {"basic_pitch": types.SimpleNamespace(ICASSP_2022_MODEL_PATH=""),
+                    "basic_pitch.inference": inference}
+            with mock.patch.dict(sys.modules, fake):
+                return chordal_windows("unused.wav", 8.0)
+
+        stabs = [(k + 0.1, k + 0.3, p, 0.8, None) for k in range(8) for p in (60, 64, 67)]
+        melody = [(k * 0.25, (k + 1) * 0.25, 60 + k % 5, 0.8, None) for k in range(32)]
+        self.assertTrue(windows(stabs).all())
+        self.assertFalse(windows(melody).any())
+
     def test_mono_guitar_without_basic_pitch_goes_to_both_parts(self):
         from unittest import mock
         with mock.patch("src.guitar_splitter.chordal_windows", return_value=None):

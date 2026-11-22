@@ -132,8 +132,11 @@ def _normalize(sig: np.ndarray) -> np.ndarray:
 
 
 def chordal_windows(audio_path: str, duration: float):
-    """Per TEXTURE_WINDOW_SEC window: True where the guitar plays chords (basic-pitch's mean
-    polyphony, sampled every 50 ms, smoothed over 3 windows), or None without basic-pitch."""
+    """Per TEXTURE_WINDOW_SEC window: True where the guitar plays chords, or None without
+    basic-pitch. The measure is basic-pitch's mean polyphony while something sounds
+    (sampled every 50 ms, smoothed over 3 windows): short chord stabs with rests between
+    them (jazz comping) count as chords. Averaged over the rests as well, a GuitarSet jazz
+    accompaniment came out 23% chords on the PC and lost half its rhythm notes."""
     try:
         from basic_pitch import ICASSP_2022_MODEL_PATH
         from basic_pitch.inference import predict
@@ -146,7 +149,9 @@ def chordal_windows(audio_path: str, duration: float):
     poly = np.zeros(n)
     for k in range(n):
         ts = np.arange(k * TEXTURE_WINDOW_SEC, (k + 1) * TEXTURE_WINDOW_SEC, 0.05)
-        poly[k] = np.mean([np.sum((starts <= t) & (t < ends)) for t in ts]) if len(starts) else 0.0
+        counts = np.array([np.sum((starts <= t) & (t < ends)) for t in ts]) if len(starts) else np.zeros(0)
+        sounding = counts[counts > 0]
+        poly[k] = sounding.mean() if len(sounding) else 0.0
     from scipy.ndimage import median_filter
     return median_filter(poly, size=3, mode="nearest") >= CHORDAL_POLYPHONY
 

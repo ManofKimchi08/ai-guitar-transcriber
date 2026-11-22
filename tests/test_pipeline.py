@@ -374,5 +374,47 @@ class TestBandTranscriber(unittest.TestCase):
         self.assertEqual(out.count("indent = 30"), 1)
 
 
+class TestPipelineLeftovers(unittest.TestCase):
+    def test_skipped_part_leaves_no_old_midi(self):
+        """A part this run skips (a mono guitar with no chords has no rhythm part) must not
+        keep an earlier run's MIDI in the song's folder, where it passes for this run's."""
+        import tempfile
+        from unittest import mock
+        import src.pipeline as pipeline
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        song = os.path.join(tmp.name, "song.wav")
+        sf.write(song, np.zeros(22050), 22050)
+        stems = os.path.join(tmp.name, "out", "song", "stems")
+        midi = os.path.join(tmp.name, "out", "song", "midi")
+        os.makedirs(stems)
+        os.makedirs(midi)
+        for name in ("drums", "bass", "guitar", "lead"):
+            sf.write(os.path.join(stems, name + ".wav"), np.zeros(22050), 22050)
+        stale = os.path.join(midi, "rhythm_guitar.mid")
+        open(stale, "wb").close()
+
+        def write_midi(wav, mid, **kwargs):
+            open(mid, "wb").close()
+
+        with mock.patch.object(pipeline, "split_guitar_track",
+                               return_value={"lead": os.path.join(stems, "lead.wav"), "rhythm": None,
+                                             "method": "mono-texture", "chordal_share": 0.0}), \
+                mock.patch.object(pipeline, "gate_stem", return_value=1.0), \
+                mock.patch.object(pipeline, "transcribe_drums", side_effect=write_midi), \
+                mock.patch.object(pipeline, "transcribe_pitch", side_effect=write_midi), \
+                mock.patch.object(pipeline, "analyze_beat_map",
+                                  return_value={"bpm": 120.0, "downbeat": 0.0, "beats": [], "beats_per_bar": 4}), \
+                mock.patch.object(pipeline, "build_musicxml_score"), \
+                mock.patch.object(pipeline, "export_score_to_pdf", return_value=None):
+            result = pipeline.run_pipeline(song, os.path.join(tmp.name, "out"), skip_separation=True,
+                                           lyrics=False, log=lambda *a: None)
+
+        self.assertNotIn("rhythm", result["midi_paths"])
+        self.assertFalse(os.path.exists(stale))
+        self.assertTrue(os.path.exists(os.path.join(midi, "lead_guitar.mid")))
+
+
 if __name__ == "__main__":
     unittest.main()
