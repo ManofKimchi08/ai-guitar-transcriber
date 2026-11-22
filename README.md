@@ -89,6 +89,18 @@ An end-to-end AI music transcription suite that isolates band instruments (Drums
 
 ## 📝 최신 업데이트 내역 (Release Notes & Changelog)
 
+### 🏷️ Version 1.5.0 (2026-11-22) - 겹쳐 치는 기타 여러 대도 채보, 왈츠 3/4 인식 개선
+
+> **태그 (Tags):** `v1.5.0`, `polyphonic-transcription`, `multi-guitar`, `waltz`, `beat-tracking`
+> 전체 릴리즈 노트: [docs/releases/v1.5.0.md](docs/releases/v1.5.0.md)
+
+- **기타 여러 대:**
+  - 리드·리듬 기타를 다성 인식기(basic-pitch)로 채보합니다. 겹쳐 치는 기타, 리프, 아르페지오도 적힙니다.
+  - 처음 보는 일렉 기타 데이터(EGSet12)에서 F 0.44 → 0.73, 기타 두 대에서 0.23 → 0.67입니다.
+  - 탭에서 코드 사이의 단음은 손 위치 근처에 놓습니다.
+- **왈츠:** Ballroom 3/4 판정 37% → 58%, 4/4는 98%를 유지합니다.
+- **고친 것:** 짧게 끊어 치는 모노 기타 반주의 화음 판정, 건너뛴 파트의 예전 MIDI가 남던 문제.
+
 ### 🏷️ Version 1.4.0 (2026-11-21) - 템포·드럼·기타·가사 정확도 개선 (공개 정답 데이터로 측정)
 
 > **태그 (Tags):** `v1.4.0`, `ride-cymbal`, `beat-tracking`, `stem-gate`, `lyrics-language`
@@ -178,13 +190,14 @@ Slakh·GuitarSet·IDMT·MDB-Drums·Ballroom의 정답과 비교하고, PC에서 
 - **리드/리듬 기타 분리 (스테레오 위치)**: 시간-주파수 칸마다 좌우 채널이 얼마나 같은지를 비교해, 가운데에 있는 소리(보통 솔로)는 리드 기타로, 좌우로 벌려 녹음한 더블트래킹 백킹은 리듬 기타로 나눕니다. 예전 Mid-Side 방식은 리드 트랙에 리듬 기타 절반이 그대로 섞였습니다 (합성 믹스 기준 리드 멜로디 채보 정확도 0% → 53~78%).
   - 두 리듬 테이크가 순간적으로 위상이 맞아 '가운데 소리'처럼 보이는 것은, 0.4초 동안 계속 가운데인지도 함께 따져 걸러냅니다. 리듬 기타를 ±60%만 벌린 믹스도 나뉩니다.
   - 리듬 기타 한 대가 가운데, 솔로가 한쪽에 있는 믹스는 코드를 치는 쪽을 리듬으로 자동 판별합니다.
-  - 기타가 모노로 녹음된 곡은 위치로 나눌 수 없어 리드·리듬 모두 기타 전체로 채보하고, 리드 없이 리듬 기타만 좌우에 있으면 리드는 건너뜁니다.
+  - 기타가 모노로 녹음된 곡은 위치로 나눌 수 없어, 1초마다 화음을 치는지 보고 화음 구간은 리듬으로, 단음 구간은 리드로 보냅니다. 리드 없이 리듬 기타만 좌우에 있으면 리드는 건너뜁니다.
   - 코드 인식은 좌우 채널을 따로 분석해 더하므로, 음정이 조금씩 다른 두 테이크가 섞이며 3음이 상쇄돼 F를 F5로 읽는 일이 줄었습니다.
   - 한계: 리드가 가운데에서 25% 이상 치우치거나 리듬 기타가 가운데 가까이 있으면 잘 나뉘지 않고, 리듬 기타를 ±60%만 벌린 곡은 리드가 없어도 리드 파트가 생길 수 있습니다.
 
-### 2. 🧠 SOTA TorchCREPE GPU 피치 추적 & CQT 코드 인식 (Plan A 엔진)
-- **TorchCREPE 심층 신경망**: 360-bin Viterbi 디코딩으로 저음역(베이스) 및 고음역(기타 솔로)의 옥타브 건너뜀(Octave Jump)과 고스트 노트를 완벽 차단.
-- **CQT Chroma 기타 코드 인식**: 리듬 기타 트랙의 CQT 스펙트로그램으로부터 표준 6현 기타 코드 보이싱(Open/Barre Voicing)을 자동 매핑.
+### 2. 🧠 basic-pitch 다성 기타 인식 & TorchCREPE GPU 피치 추적
+- **기타 (리드·리듬)**: basic-pitch로 동시에 울리는 음을 모두 찾습니다. 기타 여러 대가 겹쳐도 모든 음이 적힙니다.
+- **TorchCREPE 심층 신경망 (베이스·보컬)**: 360-bin Viterbi 디코딩으로 옥타브 건너뜀(Octave Jump)과 고스트 노트를 막습니다.
+- **basic-pitch가 없을 때**: 리드 기타는 TorchCREPE로, 리듬 기타는 CQT 크로마 코드 인식(개방현·바레 보이싱)으로 채보합니다.
 - **충돌 방지(Collision-free) 현 할당**: 화음 구성음 간 동일 줄 충돌을 자동 회피하여 실제 연주 가능한 타브 운지 계산.
 - **드럼 분류**: 주파수 대역별 어택(음량이 급히 오르는 순간)으로 킥·스네어·클로즈/오픈 하이햇·크래시를 구분합니다. 약하게 친 타격도 잡고, 울리는 심벌 아래의 스네어·하이햇, 다른 악기 소리가 섞인 경우도 견딥니다 (합성 비트 기준 F1 0.99, 타이밍 오차 ±20ms 이내). 크래시가 울리는 동안의 하이햇은 고음 대역만 따로 오른 것만 인정해, 크래시 소리의 일렁임을 하이햇으로 착각하지 않습니다.
 
@@ -376,8 +389,8 @@ ai_band_transcriber/
 │   ├── ui_theme.py            # GUI 색상 (Windows 라이트/다크 모드를 따름)
 │   ├── separator.py           # Meta Demucs 6-stem 음원 분리
 │   ├── guitar_splitter.py     # 스테레오 위치(센터 추출) 기반 Lead / Rhythm 기타 분리
-│   ├── pitch_transcriber.py   # TorchCREPE GPU 고정밀 F0 피치 트래커
-│   ├── chord_recognizer.py    # CQT 크로마 기반 기타 코드 인식기
+│   ├── pitch_transcriber.py   # 기타 basic-pitch 다성 인식, 베이스·보컬 TorchCREPE F0 추적
+│   ├── chord_recognizer.py    # CQT 크로마 기반 기타 코드 인식기 (basic-pitch가 없을 때)
 │   ├── drum_transcriber.py    # 대역별 어택 기반 드럼 트랜스크라이버 (킥/스네어/하이햇/크래시)
 │   ├── beat_map.py            # 박 지도: 박마다의 위치, 템포 옥타브, 3/4·4/4, 첫 강박
 │   ├── tab_builder.py         # 충돌 회피 알고리즘 기반 타브 악보 빌더
@@ -390,7 +403,7 @@ ai_band_transcriber/
 │   └── youtube_downloader.py  # yt-dlp 유튜브 고음질 오디오 다운로더
 │
 ├── docs/                      # 문서 및 스크린샷 에셋
-│   ├── releases/                  # 버전별 릴리즈 노트 (v1.3.0.md, v1.4.0.md ...)
+│   ├── releases/                  # 버전별 릴리즈 노트 (v1.3.0.md, v1.4.0.md, v1.5.0.md ...)
 │   └── images/
 │       ├── one_click_setup.png    # 원클릭 실행 & 자동 설치 안내
 │       ├── gui_main.png           # 메인 GUI (다크 모드, 예시 곡)
