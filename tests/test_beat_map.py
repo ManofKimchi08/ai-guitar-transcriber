@@ -1,7 +1,7 @@
 """
 Tests for the beat map on synthetic band audio with known beat times: bar lines that
 follow a drifting tempo, the tempo octave (eighth-note or half-time tracking, busy eighths), bars of
-3 (a waltz) against bars of 4, and the score's playback tempo following the bars.
+3 (a waltz, also one tracked in eighths) against bars of 4, and the score's playback tempo following the bars.
 """
 
 import os
@@ -77,6 +77,20 @@ def waltz(beats, seed=0):
         else:
             add(snare, t)
             add(sum(0.1 * np.sin(2 * np.pi * pretty_midi.note_number_to_hz(p + 12) * bt) * np.exp(-3 * bt) for p in triad), t)
+    return y / np.max(np.abs(y))
+
+
+def eighth_waltz(beats, seed=0):
+    """The waltz with a hi-hat on every beat and every "and": the tracker follows the eighths."""
+    y = waltz(beats, seed=seed)
+    rng = np.random.default_rng(seed + 1)
+    period = np.diff(beats, append=2 * beats[-1] - beats[-2])
+    th = np.arange(int(0.05 * SR)) / SR
+    hat = 0.25 * rng.standard_normal(len(th)) * np.exp(-60 * th)
+    for j, t in enumerate(beats):
+        for half in (0.0, 0.5):
+            i = int((t + half * period[j]) * SR)
+            y[i:i + len(hat)] += hat[:max(0, len(y) - i)]
     return y / np.max(np.abs(y))
 
 
@@ -170,6 +184,15 @@ class TestBeatMap(unittest.TestCase):
             self.assertLess(abs(error), 0.03, f"waltz at {bpm} BPM downbeat off by {error:.3f}s")
         groove = analyze_beat_map(write("groove_4", band(beat_times(np.full(48, 110.0)), seed=4)))
         self.assertEqual(groove["beats_per_bar"], 4)
+
+    def test_waltz_tracked_in_eighths_is_halved(self):
+        """A slow waltz the tracker follows in eighth notes (Ballroom waltzes were read at 2x
+        and in 4/4) is read on its beat in 3/4; a fast (Viennese) waltz keeps its tempo."""
+        for bpm, make in ((87, eighth_waltz), (177, waltz), (177, eighth_waltz)):
+            beats = beat_times(np.full(72, float(bpm)))
+            beat_map = analyze_beat_map(write(f"{make.__name__}_{bpm}", make(beats, seed=5)))
+            self.assertLess(abs(beat_map["bpm"] / bpm - 1), 0.04, f"{make.__name__} at {bpm} BPM: {beat_map['bpm']:.1f}")
+            self.assertEqual(beat_map["beats_per_bar"], 3, f"{make.__name__} at {bpm} BPM")
 
     def test_playback_tempo_follows_the_bars(self):
         """The printed tempo is the average; bars that drift from it get their own playback tempo."""
