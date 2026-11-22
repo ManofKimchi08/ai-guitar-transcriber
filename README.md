@@ -89,6 +89,14 @@ An end-to-end AI music transcription suite that isolates band instruments (Drums
 
 ## 📝 최신 업데이트 내역 (Release Notes & Changelog)
 
+### 🏷️ Version 1.5.1 (2026-11-22) - 리듬 기타 탭을 칠 수 있게
+
+> **태그 (Tags):** `v1.5.1`, `guitar-tab`, `playability`
+> 전체 릴리즈 노트: [docs/releases/v1.5.1.md](docs/releases/v1.5.1.md)
+
+- **손이 닿는 코드 모양:** 코드의 누른 프렛 폭을 4칸 이하로 제한합니다. 기타 여러 대의 음이 한 화음으로 묶여 생기던 무리한 운지(Slakh 두 곡 27곳·66곳)가 0이 됐습니다.
+- **스트럼은 한 화음으로:** 조금 늦게 친 음도 같은 스트럼에 넣고, 리듬 기타는 16분음표까지만 적습니다. 한 박 최대 타격 수가 8에서 4로 줄었습니다.
+
 ### 🏷️ Version 1.5.0 (2026-11-22) - 겹쳐 치는 기타 여러 대도 채보, 왈츠 3/4 인식 개선
 
 > **태그 (Tags):** `v1.5.0`, `polyphonic-transcription`, `multi-guitar`, `waltz`, `beat-tracking`
@@ -403,7 +411,7 @@ ai_band_transcriber/
 │   └── youtube_downloader.py  # yt-dlp 유튜브 고음질 오디오 다운로더
 │
 ├── docs/                      # 문서 및 스크린샷 에셋
-│   ├── releases/                  # 버전별 릴리즈 노트 (v1.3.0.md, v1.4.0.md, v1.5.0.md ...)
+│   ├── releases/                  # 버전별 릴리즈 노트 (v1.3.0.md, v1.4.0.md, v1.5.0.md, v1.5.1.md ...)
 │   └── images/
 │       ├── one_click_setup.png    # 원클릭 실행 & 자동 설치 안내
 │       ├── gui_main.png           # 메인 GUI (다크 모드, 예시 곡)
